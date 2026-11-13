@@ -1,0 +1,16 @@
+{
+  "name": "Où est le Poulet? Balham",
+  "short_name": "Poulet",
+  "description": "Dom's birthday pub crawl in Balham: check in, beat challenges, unlock clues and find the chicken.",
+  "start_url": "./#play",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#F4F5F2",
+  "theme_color": "#F5A524",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" },
+    { "src": "icons/icon.svg", "sizes": "any", "type": "image/svg+xml" }
+  ]
+}
