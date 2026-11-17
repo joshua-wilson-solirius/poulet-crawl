@@ -16,7 +16,7 @@ const DEFAULT_TEAMS = [
   {id:"rangers", num:3,    name:"Free Rangers", color:"#12A594", members:["Hana","Ben","Zara"]},
   {id:"hens",    num:4,    name:"Hen Party",    color:"#8E4EC6", members:["Rosie","Kwame","Lily"]},
 ];
-const DEFAULT_SETTINGS = {interval:2, state:"setup", showOthers:false, showBoard:false, buyIn:"£15", start:""};
+const DEFAULT_SETTINGS = {interval:2, state:"setup", showBoard:false, buyIn:"£15", start:""};
 const PALETTE = ["#E5484D","#3E63DD","#12A594","#8E4EC6","#F76B15","#D6409F","#0090FF","#46A758","#E0A100","#6E56CF"];
 function defaultRules(){
   const ch=chicken();
@@ -84,6 +84,9 @@ const ls = {get(k){try{return JSON.parse(localStorage.getItem(LS+k))}catch(e){re
 const esc=s=>String(s==null?"":s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const ms=t=>typeof t==="number"?t:Date.parse(t);
 const ago=t=>{const m=Math.round((Date.now()-ms(t))/60000);return m<1?"just now":m<60?m+" min ago":Math.round(m/60)+" h ago";};
+/* a time that keeps itself up to date: the 30-second ticker rewrites every [data-ago] */
+const agoSpan=t=>`<span data-ago="${ms(t)}">${ago(t)}</span>`;
+const STALE_MIN=45;
 const hhmm=t=>new Date(ms(t)).toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"});
 const gmaps=p=>"https://www.google.com/maps/dir/?api=1&travelmode=walking&destination="+p.lat+","+p.lng;
 const uid=()=>Math.random().toString(36).slice(2,10)+Date.now().toString(36);
@@ -96,10 +99,11 @@ const ICON={
   pin:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21s-7-6.2-7-11a7 7 0 0 1 14 0c0 4.8-7 11-7 11Z"/><circle cx="12" cy="10" r="2.5"/></svg>',
   cam:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/></svg>',
   lock:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>',
+  gallery:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="2"/><path d="m21 16-5-5-9 9"/></svg>',
   walk:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="13" cy="4" r="2"/><path d="m9 21 2-6 3 3v3M7 12l3-4 4 1 3 3M11 15l-1-4"/></svg>',
 };
 let toastT;
-function toast(msg){const t=document.getElementById("toast");t.textContent=msg;t.hidden=false;clearTimeout(toastT);toastT=setTimeout(()=>t.hidden=true,3400);}
+function toast(msg,dur){const t=document.getElementById("toast");t.textContent=msg;t.hidden=false;clearTimeout(toastT);toastT=setTimeout(()=>t.hidden=true,dur||3400);}
 function openSheet(html){document.getElementById("sheetroot").innerHTML=`<div class="scrim" data-action="closesheet"><div class="sheet" role="dialog" aria-modal="true"><div class="grab"></div>${html}</div></div>`;
   const f=document.querySelector(".sheet [autofocus]"); if(f&&matchMedia("(min-width:761px)").matches) f.focus();}
 function closeSheet(){document.getElementById("sheetroot").innerHTML="";}
@@ -115,9 +119,9 @@ function errText(e){const m=(e&&(e.message||e.error_description||e.msg))||String
 
 /* =================== raw data (what this phone is allowed to see) =================== */
 const R = {settings:{}, teams:[], rosters:{}, members:[], pubinfo:{}, challenges:{}, secret:{hideout:null,clues:[]},
-           visits:[], subs:[], unlocked:[], found:[], positions:[], board:[], admins:[], myTeam:null};
-const S = {mode:"connecting", loaded:false, me:{email:null,isAdmin:false,userId:null}, adminTab:"review", q:"", cq:"", selPub:null, draft:{},
-           chal:{}, viewAs:null, signed:{}};
+           visits:[], subs:[], selfies:[], unlocked:[], found:[], positions:[], board:[], admins:[], myTeam:null};
+const S = {mode:"connecting", loaded:false, me:{email:null,isAdmin:false,userId:null}, adminTab:"activity", q:"", cq:"", selPub:null, draft:{},
+           chal:{}, viewAs:null, signed:{}, galBy:"team", actTeam:"", seenAt:ls.get("seenAct")||Date.now(), selfieBusy:null};
 
 /* =================== derived state =================== */
 let D = {};
@@ -127,12 +131,13 @@ function derive(){
   const visits={}; R.visits.forEach(v=>{(visits[v.team_id]=visits[v.team_id]||[]).push({team:v.team_id,pub:v.pub_id,at:ms(v.at)});});
   Object.values(visits).forEach(a=>a.sort((x,y)=>x.at-y.at||(x.pub<y.pub?-1:1)));
   const subs=R.subs.map(s=>({_id:s.id,team:s.team_id,pub:s.pub_id,stop:s.stop,media:s.media||[],note:s.note,at:ms(s.at),status:s.status,reviewNote:s.review_note,clue:s.clue_no})).sort((a,b)=>b.at-a.at);
+  const selfies={}; R.selfies.forEach(x=>{selfies[x.team_id+"|"+x.pub_id]={team:x.team_id,pub:x.pub_id,path:x.path,data:x.data,at:ms(x.at),bucket:"selfies"};});
   const unlocked={}; R.unlocked.forEach(u=>{(unlocked[u.team_id]=unlocked[u.team_id]||[]).push({n:u.n,text:u.body,at:ms(u.at),pub:u.pub_id});});
   Object.values(unlocked).forEach(a=>a.sort((x,y)=>x.n-y.n));
   const found={}; R.found.forEach(f=>{found[f.team_id]={at:ms(f.at)};});
   R.board.forEach(b=>{ if(b.found_at&&!found[b.team_id]) found[b.team_id]={at:ms(b.found_at)}; });
   const positions={}; R.positions.forEach(p=>{positions[p.team_id]={pub:p.pub_id,at:ms(p.at)};});
-  D={settings, teams, visits, subs, unlocked, found, positions, board:R.board,
+  D={settings, teams, visits, subs, selfies, unlocked, found, positions, board:R.board,
      challenges:R.challenges, pubinfo:R.pubinfo, secret:R.secret, members:R.members,
      interval:Math.max(1,parseInt(settings.interval)||2)};
 }
@@ -145,6 +150,13 @@ const visitsOf=t=>D.visits[t]||[];
 const lastPubOf=t=>{const v=visitsOf(t); if(v.length) return pubById(v[v.length-1].pub); const p=D.positions[t]; return p?pubById(p.pub):null;};
 const isStop=i=>(i+1)%D.interval===0;
 const subFor=(t,pub)=>D.subs.find(s=>s.team===t&&s.pub===pub);
+const selfieFor=(t,pub)=>D.selfies[t+"|"+pub]||null;
+const finished=()=>D.settings.state==="finished";
+const galleryOpen=()=>isAdmin()||(finished()&&!!myTeamId());
+/* every check-in, newest first (organisers see all teams; players only their own) */
+const allVisits=()=>Object.values(D.visits).flat().sort((a,b)=>b.at-a.at);
+const unseenCount=()=>isAdmin()&&S.mode==="db"?allVisits().filter(v=>v.at>S.seenAt).length:0;
+function markSeen(){ S.prevSeen=S.seenAt; S.seenAt=Date.now(); ls.set("seenAct",S.seenAt); }
 const foundOrder=()=>hunters().filter(t=>D.found[t.id]).sort((a,b)=>D.found[a.id].at-D.found[b.id].at).map(t=>t.id);
 const pending=()=>D.subs.filter(s=>s.status==="pending");
 const live=()=>D.settings.state==="live";
@@ -184,6 +196,7 @@ function SupabaseBackend(client){
           members:client.from("team_members").select("*"),
           visits:client.from("visits").select("*"),
           subs:client.from("submissions").select("*"),
+          selfies:client.from("selfies").select("*"),
           unlocked:client.from("unlocked").select("*"),
           found:client.from("found").select("*"),
           positions:client.rpc("team_positions"),
@@ -192,14 +205,16 @@ function SupabaseBackend(client){
         if(admin) Object.assign(jobs,{challenges:client.from("challenges").select("*"), secret:client.from("secret").select("*").eq("id",1).maybeSingle(), admins:client.from("admins").select("email")});
       }
       const keys=Object.keys(jobs), res=await Promise.all(keys.map(k=>jobs[k]));
-      const out={}; keys.forEach((k,i)=>{ if(res[i].error) throw res[i].error; out[k]=res[i].data; });
+      const out={}; keys.forEach((k,i)=>{
+        if(res[i].error){ if(k==="selfies"){ console.warn("Selfies unavailable. Re-run schema.sql.",res[i].error); out[k]=[]; return; } throw res[i].error; }
+        out[k]=res[i].data; });
       R.settings=(out.settings&&out.settings.data)||{};
       R.teams=out.teams||[];
       R.pubinfo={}; (out.pubinfo||[]).forEach(p=>R.pubinfo[p.pub_id]={price:p.price||"",hours:p.hours||"",note:p.note||""});
       R.rosters={}; (out.rosters||[]).forEach(r=>R.rosters[r.team_id]=r.names||[]);
       R.members=out.members||[];
       const mine=R.members.find(m=>m.user_id===S.me.userId); R.myTeam=mine?mine.team_id:null;
-      R.visits=out.visits||[]; R.subs=out.subs||[]; R.unlocked=out.unlocked||[]; R.found=out.found||[];
+      R.visits=out.visits||[]; R.subs=out.subs||[]; R.selfies=out.selfies||[]; R.unlocked=out.unlocked||[]; R.found=out.found||[];
       R.positions=out.positions||[]; R.board=out.board||[];
       R.challenges={}; (out.challenges||[]).forEach(c=>R.challenges[c.pub_id]={title:c.title||"",text:c.body||""});
       R.secret=out.secret?{hideout:out.secret.hideout,clues:out.secret.clues||[]}:{hideout:null,clues:[]};
@@ -219,7 +234,20 @@ function SupabaseBackend(client){
       return {path,type};
     },
     submit:(team,pub,stop,media,note)=>q(client.from("submissions").insert({team_id:team,pub_id:pub,stop,media,note})),
-    async signUrls(paths){ const d=await q(client.storage.from("evidence").createSignedUrls(paths,3600)); const o={}; d.forEach(x=>{ if(x.signedUrl) o[x.path]=x.signedUrl; }); return o; },
+    async signUrls(bucket,paths){ const d=await q(client.storage.from(bucket).createSignedUrls(paths,3600)); const o={}; d.forEach(x=>{ if(x.signedUrl) o[x.path]=x.signedUrl; }); return o; },
+    async uploadSelfie(team,pub,blob){
+      const path=`${team}/${pub}/${Date.now()}-${uid()}.jpg`;
+      await q(client.storage.from("selfies").upload(path,blob,{contentType:"image/jpeg",upsert:false}));
+      return path;
+    },
+    async saveSelfie(team,pub,path,old){
+      await q(client.from("selfies").upsert({team_id:team,pub_id:pub,path,at:new Date().toISOString()}));
+      if(old&&old!==path) await client.storage.from("selfies").remove([old]);   // tidy up the replaced photo; a failure here is harmless
+    },
+    async deleteSelfie(team,pub,path){
+      await q(client.from("selfies").delete().eq("team_id",team).eq("pub_id",pub));
+      if(path) await client.storage.from("selfies").remove([path]);
+    },
     approve:(id,auto)=>q(client.rpc("approve_submission",{p_id:id,p_auto_text:auto})),
     reject:(id,note)=>q(client.rpc("reject_submission",{p_id:id,p_note:note})),
     unlock:(team,auto,pub)=>q(client.rpc("unlock_clue",{p_team:team,p_auto_text:auto,p_pub:pub})),
@@ -245,7 +273,7 @@ function SupabaseBackend(client){
 
 function LocalBackend(){
   const K="demo";
-  const db=Object.assign({settings:{}, teams:null, rosters:{}, members:[], pubinfo:{}, challenges:{}, secret:{hideout:null,clues:[]}, visits:[], subs:[], unlocked:[], found:[], myTeam:null}, ls.get(K)||{});
+  const db=Object.assign({settings:{}, teams:null, rosters:{}, members:[], pubinfo:{}, challenges:{}, secret:{hideout:null,clues:[]}, visits:[], subs:[], selfies:[], unlocked:[], found:[], myTeam:null}, ls.get(K)||{});
   if(!db.teams){ db.teams=DEFAULT_TEAMS.map((t,i)=>({id:t.id,num:t.num,name:t.name,color:t.color,is_chicken:!!t.chicken,sort:i})); DEFAULT_TEAMS.forEach(t=>db.rosters[t.id]=t.members.slice()); }
   const save=()=>ls.set(K,db), now=()=>new Date().toISOString();
   const nextN=t=>db.unlocked.filter(u=>u.team_id===t).reduce((m,u)=>Math.max(m,u.n),0)+1;
@@ -253,7 +281,7 @@ function LocalBackend(){
   return {
     async load(){
       R.settings=db.settings; R.teams=db.teams; R.rosters=db.rosters; R.members=db.members; R.pubinfo=db.pubinfo; R.challenges=db.challenges;
-      R.secret=db.secret; R.visits=db.visits; R.subs=db.subs; R.unlocked=db.unlocked; R.found=db.found; R.myTeam=db.myTeam; R.admins=[];
+      R.secret=db.secret; R.visits=db.visits; R.subs=db.subs; R.selfies=db.selfies; R.unlocked=db.unlocked; R.found=db.found; R.myTeam=db.myTeam; R.admins=[];
       const pos={}; db.visits.forEach(v=>{ if(!pos[v.team_id]||ms(v.at)>ms(pos[v.team_id].at)) pos[v.team_id]=v; });
       R.positions=Object.values(pos);
       R.board=db.teams.filter(t=>!t.is_chicken).map(t=>({team_id:t.id,pubs:db.visits.filter(v=>v.team_id===t.id).length,clues:db.unlocked.filter(u=>u.team_id===t.id).length,found_at:(db.found.find(f=>f.team_id===t.id)||{}).at||null}));
@@ -262,11 +290,16 @@ function LocalBackend(){
       if(db.myTeam&&db.myTeam!==t.id) throw new Error("already_in_team"); db.myTeam=t.id;
       db.members=db.members.filter(m=>m.user_id!=="me"); db.members.push({user_id:"me",team_id:t.id,display_name:name||null,joined_at:now()}); save(); return t.id; },
     async checkIn(team,pub){ if((db.settings.state||"setup")!=="live") throw new Error("row-level security"); if(!db.visits.some(v=>v.team_id===team&&v.pub_id===pub)) db.visits.push({team_id:team,pub_id:pub,at:now()}); save(); },
-    async undoVisit(team,pub){ db.visits=db.visits.filter(v=>!(v.team_id===team&&v.pub_id===pub)); save(); },
+    async undoVisit(team,pub){ const f=x=>!(x.team_id===team&&x.pub_id===pub); db.visits=db.visits.filter(f); db.selfies=db.selfies.filter(f); save(); },
     async getChallenge(pub){ const c=db.challenges[pub]; return c&&(c.title||c.text)?c:(db.challenges._all||{title:"",text:""}); },
     async upload(team,pub,blob,type){ return {path:"demo/"+uid(),type,demo:true}; },
     async submit(team,pub,stop,media,note){ db.subs.push({id:uid(),team_id:team,pub_id:pub,stop,media,note,at:now(),status:"pending"}); save(); },
     async signUrls(){ return {}; },
+    /* demo mode keeps a small copy of the photo in this browser, so the gallery can be tried without Supabase */
+    async uploadSelfie(team,pub,blob){ return "demo:"+await shrinkToDataUrl(blob,480); },
+    async saveSelfie(team,pub,path){ if((db.settings.state||"setup")!=="live") throw new Error("row-level security");
+      db.selfies=db.selfies.filter(x=>!(x.team_id===team&&x.pub_id===pub)); db.selfies.push({team_id:team,pub_id:pub,path:"demo",data:path.slice(5),at:now()}); save(); },
+    async deleteSelfie(team,pub){ db.selfies=db.selfies.filter(x=>!(x.team_id===team&&x.pub_id===pub)); save(); },
     async approve(id,auto){ const s=db.subs.find(x=>x.id===id); if(!s||s.status==="approved") return; const n=nextN(s.team_id);
       db.unlocked.push({team_id:s.team_id,n,body:clueText(n,auto),pub_id:s.pub_id,at:now()}); Object.assign(s,{status:"approved",clue_no:n,reviewed_at:now(),review_note:null}); save(); return n; },
     async reject(id,note){ const s=db.subs.find(x=>x.id===id); if(s) Object.assign(s,{status:"rejected",review_note:note||null,reviewed_at:now()}); save(); },
@@ -278,7 +311,7 @@ function LocalBackend(){
     async saveChallenge(pub,c){ if(c) db.challenges[pub]=c; else delete db.challenges[pub]; save(); },
     async savePubInfo(pub,i){ if(i) db.pubinfo[pub]=i; else delete db.pubinfo[pub]; save(); },
     async saveTeams(list){ db.teams=list.map(t=>({id:t.id,num:t.num,name:t.name,color:t.color,is_chicken:!!t.chicken,sort:t.sort})); list.forEach(t=>db.rosters[t.id]=t.members); save(); },
-    async deleteTeam(id){ db.teams=db.teams.filter(t=>t.id!==id); delete db.rosters[id]; ["visits","subs","unlocked","found","members"].forEach(k=>db[k]=db[k].filter(x=>x.team_id!==id)); if(db.myTeam===id) db.myTeam=null; save(); },
+    async deleteTeam(id){ db.teams=db.teams.filter(t=>t.id!==id); delete db.rosters[id]; ["visits","subs","selfies","unlocked","found","members"].forEach(k=>db[k]=db[k].filter(x=>x.team_id!==id)); if(db.myTeam===id) db.myTeam=null; save(); },
     async moveMember(user,team){ const m=db.members.find(x=>x.user_id===user); if(m) m.team_id=team; if(user==="me") db.myTeam=team; save(); },
     async removeMember(user){ db.members=db.members.filter(x=>x.user_id!==user); if(user==="me") db.myTeam=null; save(); },
     async addAdmin(){}, async removeAdmin(){},
@@ -297,13 +330,17 @@ function softRefresh(){ clearTimeout(refreshT); refreshT=setTimeout(refresh,500)
 
 /* signed links for private evidence */
 function signedUrl(m){
-  if(!m||!m.path||m.demo) return "";
-  if(S.signed[m.path]) return S.signed[m.path];
-  queueSign(m.path); return "";
+  if(!m) return "";
+  if(m.data) return m.data;                       // demo-mode selfie
+  if(!m.path||m.demo) return "";
+  const b=m.bucket||"evidence", k=b+":"+m.path;
+  if(S.signed[k]) return S.signed[k];
+  queueSign(b,m.path); return "";
 }
-let signQ=new Set(), signT=null;
-function queueSign(p){ signQ.add(p); clearTimeout(signT); signT=setTimeout(async()=>{ const paths=[...signQ]; signQ.clear();
-  try{ Object.assign(S.signed, await api.signUrls(paths)); renderAll(); }catch(e){ console.warn(e); } },50); }
+let signQ={}, signT=null;
+function queueSign(b,p){ (signQ[b]=signQ[b]||new Set()).add(p); clearTimeout(signT); signT=setTimeout(async()=>{ const q=signQ; signQ={};
+  try{ for(const [bucket,set] of Object.entries(q)){ const o=await api.signUrls(bucket,[...set]); Object.entries(o).forEach(([p,u])=>S.signed[bucket+":"+p]=u); } renderAll(); }
+  catch(e){ console.warn(e); } },50); }
 
 /* challenges: players fetch theirs from the database only at a challenge pub */
 function challengeFor(pubId){
@@ -314,10 +351,11 @@ function challengeFor(pubId){
 }
 
 /* =================== navigation =================== */
-const NAV=[["play","Play"],["map","Map"],["teams","Teams"],["rules","Rules"],["admin","Chicken HQ"]];
-const route=()=>{const h=location.hash.slice(1);if(h==="admin"&&!isAdmin())return "play";return NAV.some(n=>n[0]===h)?h:"play";};
+const NAV=[["play","Play"],["map","Map"],["teams","Teams"],["gallery","Gallery"],["rules","Rules"],["admin","Chicken HQ"]];
+const navAllowed=k=>k==="admin"?isAdmin():k==="gallery"?galleryOpen():true;
+const route=()=>{const h=location.hash.slice(1);return NAV.some(n=>n[0]===h)&&navAllowed(h)?h:"play";};
 function renderChrome(){
-  const r=route(), items=NAV.filter(n=>n[0]!=="admin"||isAdmin()), pc=isAdmin()?pending().length:0;
+  const r=route(), items=NAV.filter(n=>navAllowed(n[0])), pc=isAdmin()?pending().length+unseenCount():0;
   const badge=k=>k==="admin"&&pc?`<span class="cnt">${pc}</span>`:"";
   document.getElementById("toptabs").innerHTML=items.map(([k,l])=>`<a href="#${k}" ${r===k?'aria-current="page"':""}>${l}${badge(k)}</a>`).join("");
   document.getElementById("bottomnav").innerHTML=items.map(([k,l])=>`<a href="#${k}" ${r===k?'aria-current="page"':""}>${ICON[k]}<span>${k==="admin"?"HQ":l}</span>${badge(k)}</a>`).join("");
@@ -333,7 +371,7 @@ function renderChrome(){
 function stateBanner(){
   const st=D.settings.state;
   if(st==="setup") return `<div class="banner yolk"><b>The game hasn't started yet.</b> Meet at ${esc(CONFIG.meetPub)}${D.settings.start?` at ${esc(D.settings.start)}`:""}. Check-ins open when the chicken starts the game.</div>`;
-  if(st==="finished") return `<div class="banner"><b>Game over.</b> Check the Teams tab for the final standings.</div>`;
+  if(st==="finished") return `<div class="banner"><b>Game over.</b> Check the Teams tab for the final standings, and the <a href="#gallery">Gallery</a> for every team's selfies.</div>`;
   return "";
 }
 function joinScreen(){
@@ -381,11 +419,72 @@ function viewPlay(){
     <div class="clue locked"><div class="n">${clues.length+1}</div><div><p>Locked</p><span class="sm muted">Finish the challenge at your next challenge pub and send evidence. The chicken unlocks it.</span></div></div>
   </div>`;
   h+=`<div class="card"><h2>Your crawl</h2>${v.length?`<div class="timeline">${v.slice().reverse().map((x,ri)=>{const i=v.length-1-ri,p=pubById(x.pub),st=isStop(i),s=st?subFor(tid,x.pub):null;
-      return `<div class="tl"><span class="k ${st?"c":""}">${i+1}</span><div style="min-width:0"><b>${esc(p?p.name:"Unknown pub")}</b><div class="sm muted">${hhmm(x.at)}${st?" · challenge pub":""}</div></div>
-      <div class="row" style="gap:6px">${st?statusPill(s):""}${st&&!(s&&s.status==="approved")?`<button class="btn sm" data-action="openchal" data-pub="${x.pub}" data-i="${i}">Challenge</button>`:""}${ri===0&&!(s&&s.status==="approved")&&!S.viewAs?`<button class="btn sm ghost" data-action="undovisit" data-pub="${x.pub}" aria-label="Undo check-in">Undo</button>`:""}</div></div>`;}).join("")}</div>`
+      return `<div class="tl"><span class="k ${st?"c":""}">${i+1}</span><div style="min-width:0"><b>${esc(p?p.name:"Unknown pub")}</b><div class="sm muted">${hhmm(x.at)}${st?" · challenge pub":""}</div>${selfieThumb(tid,x.pub)}</div>
+      <div class="row" style="gap:6px;justify-content:flex-end">${st?statusPill(s):""}${st&&!(s&&s.status==="approved")?`<button class="btn sm" data-action="openchal" data-pub="${x.pub}" data-i="${i}">Challenge</button>`:""}${ri===0&&!(s&&s.status==="approved")&&!S.viewAs?`<button class="btn sm ghost" data-action="undovisit" data-pub="${x.pub}" aria-label="Undo check-in">Undo</button>`:""}</div></div>`;}).join("")}</div>`
     :`<div class="empty">${ICON.walk.replace("<svg",'<svg width="28" height="28"')}<span>No pubs yet. Your first check-in starts the clock.</span></div>`}</div>`;
   return h;
 }
+/* selfies */
+function selfieThumb(tid,pub){
+  const sf=selfieFor(tid,pub), u=signedUrl(sf), busy=S.selfieBusy===tid+"|"+pub;
+  if(busy) return `<span class="sthumb ph" aria-label="Uploading selfie">…</span>`;
+  if(sf) return `<button class="sthumb" data-action="viewselfie" data-team="${tid}" data-pub="${pub}" aria-label="View selfie">${u?`<img src="${esc(u)}" alt="">`:""}</button>`;
+  return live()&&!S.viewAs?`<label class="btn sm selfie-add" for="sf-${pub}">${ICON.cam.replace("<svg",'<svg width="14" height="14"')} Selfie<input type="file" id="sf-${pub}" accept="image/*" capture="user" class="vh" data-action="pickselfie" data-team="${tid}" data-pub="${pub}"></label>`:"";
+}
+function selfieSheet(tid,pub){
+  const p=pubById(pub);
+  return `<div class="selfie-ask">${ICON.cam.replace("<svg",'<svg width="40" height="40"')}
+    <h2>Team selfie at ${esc(p?p.name:"the pub")}</h2>
+    <p class="muted">Proof you made it. Only your team and the chicken see it until the game ends, then it goes in the gallery for everyone.</p>
+    <label class="btn primary block" for="sfs-${pub}">Take the selfie<input type="file" id="sfs-${pub}" accept="image/*" capture="user" class="vh" data-action="pickselfie" data-team="${tid}" data-pub="${pub}"></label>
+    <button class="btn block ghost" data-action="closesheet">Skip for now</button></div>`;
+}
+function selfieViewSheet(tid,pub){
+  const sf=selfieFor(tid,pub), u=signedUrl(sf), t=teamById(tid)||{name:tid,color:"#888"}, p=pubById(pub);
+  const canRetake=live()&&!S.viewAs&&tid===myTeamId();
+  return `<div class="row"><span class="dot" style="background:${t.color}"></span><b>${esc(t.name)}</b><span class="spacer"></span><button class="btn sm ghost" data-action="closesheet">Close</button></div>
+    <div class="selfie-big">${u?`<img src="${esc(u)}" alt="${esc(t.name)} at ${esc(p?p.name:"")}">`:'<div class="media-ph" style="width:100%;height:320px">Loading…</div>'}</div>
+    <p class="sm muted">${esc(p?p.name:"")}${sf?` · ${hhmm(sf.at)}`:""}</p>
+    ${canRetake?`<label class="btn block" for="sfr-${pub}">${ICON.cam.replace("<svg",'<svg width="16" height="16"')} Retake<input type="file" id="sfr-${pub}" accept="image/*" capture="user" class="vh" data-action="pickselfie" data-team="${tid}" data-pub="${pub}"></label>`:""}`;
+}
+async function uploadSelfie(tid,pub,file){
+  const key=tid+"|"+pub, old=selfieFor(tid,pub);
+  S.selfieBusy=key; closeSheet(); renderAll(); toast("Uploading your selfie…",20000);
+  try{
+    const blob=await compressImage(file);
+    if(blob.size>5*1024*1024){ toast("That photo is too big. Try again."); return; }
+    const path=await api.uploadSelfie(tid,pub,blob);
+    await act(()=>api.saveSelfie(tid,pub,path,old&&old.path),old?"Selfie replaced.":"Selfie saved. Looking good.");
+  }catch(e){ console.warn(e); toast(/row-level|403|Unauthorized/i.test((e&&e.message)||"")?(live()?"Upload refused. Make sure you've joined a team.":"The game isn't live, so selfies are closed."):"Upload failed. Check your signal and try again."); }
+  finally{ S.selfieBusy=null; renderAll(); }
+}
+function shrinkToDataUrl(blob,max){ return createImageBitmap(blob).then(bmp=>{const s=Math.min(1,max/Math.max(bmp.width,bmp.height));
+  const c=document.createElement("canvas"); c.width=Math.round(bmp.width*s); c.height=Math.round(bmp.height*s); c.getContext("2d").drawImage(bmp,0,0,c.width,c.height); return c.toDataURL("image/jpeg",.72);}); }
+
+/* =================== GALLERY =================== */
+function galleryTile(sf){
+  const t=teamById(sf.team)||{name:sf.team,color:"#888"}, p=pubById(sf.pub), u=signedUrl(sf);
+  return `<button class="gtile" data-action="viewselfie" data-team="${sf.team}" data-pub="${sf.pub}">
+    ${u?`<img src="${esc(u)}" alt="${esc(t.name)} at ${esc(p?p.name:"")}" loading="lazy">`:'<span class="media-ph">Loading…</span>'}
+    <span class="cap"><span class="dot" style="background:${t.color}"></span><span>${esc(S.galBy==="team"?(p?p.name:""):t.name)}</span></span></button>`;
+}
+function viewGallery(){
+  const all=Object.values(D.selfies);
+  let h=`<div><h1>Gallery</h1><p class="muted">Every team selfie from the crawl.</p></div>`;
+  if(isAdmin()&&!finished()) h+=`<div class="banner yolk">Players see the gallery once you set the game to <b>Finished</b>. Until then each team only sees its own selfies.</div>`;
+  h+=`<div class="segs" role="group" aria-label="Group selfies by">${[["team","By team"],["pub","By pub"]].map(([k,l])=>`<button type="button" data-action="galby" data-k="${k}" aria-pressed="${S.galBy===k}">${l}</button>`).join("")}</div>`;
+  if(!all.length) return h+`<div class="card empty">${ICON.gallery.replace("<svg",'<svg width="28" height="28"')}<b style="color:var(--ink)">No selfies yet</b><span>Teams add one each time they check in to a pub.</span></div>`;
+  if(S.galBy==="team"){
+    h+=hunters().map(t=>{const order=visitsOf(t.id).map(v=>v.pub), list=all.filter(x=>x.team===t.id).sort((a,b)=>order.indexOf(a.pub)-order.indexOf(b.pub));
+      return list.length?`<div class="card"><div class="row"><span class="dot" style="background:${t.color};width:14px;height:14px"></span><h2>${esc(t.name)}</h2><span class="spacer"></span><span class="pill">${list.length} ${list.length===1?"pub":"pubs"}</span></div><div class="ggrid">${list.map(galleryTile).join("")}</div></div>`:"";}).join("");
+  } else {
+    const byPub={}; all.forEach(x=>(byPub[x.pub]=byPub[x.pub]||[]).push(x));
+    h+=Object.entries(byPub).sort((a,b)=>Math.min(...a[1].map(x=>x.at))-Math.min(...b[1].map(x=>x.at))).map(([pid,list])=>{const p=pubById(pid);
+      return `<div class="card"><div class="row"><h2>${esc(p?p.name:"Unknown pub")}</h2><span class="spacer"></span><span class="pill">${list.length} ${list.length===1?"team":"teams"}</span></div><div class="ggrid">${list.sort((a,b)=>a.at-b.at).map(galleryTile).join("")}</div></div>`;}).join("");
+  }
+  return h;
+}
+
 function statusPill(s){if(!s)return `<span class="pill">To do</span>`;return s.status==="approved"?`<span class="pill good">Clue ${s.clue||""} unlocked</span>`:s.status==="rejected"?`<span class="pill bad">Try again</span>`:`<span class="pill yolk">With the chicken</span>`;}
 function challengeCard(tid,pubId,i){
   const c=challengeFor(pubId), s=subFor(tid,pubId), dk=tid+"|"+pubId, dr=S.draft[dk]||{files:[],note:""};
@@ -482,7 +581,7 @@ function pubCard(p, full){
     ${full&&p.web?`<a class="sm" href="${esc(p.web)}" target="_blank" rel="noopener">Pub website</a>`:""}
   </div>`;
 }
-function visibleTeamsOnMap(){ return hunters().filter(t=>!D.found[t.id]&&(t.id===myTeamId()||isAdmin()||D.settings.showOthers===true)); }
+function visibleTeamsOnMap(){ return hunters().filter(t=>!D.found[t.id]&&(t.id===myTeamId()||isAdmin())); }
 function pubPopup(p){
   const tid=myTeamId(), seen=tid&&visitsOf(tid).some(v=>v.pub===p.id);
   const here=visibleTeamsOnMap().filter(t=>{const lp=lastPubOf(t.id);return lp&&lp.id===p.id;});
@@ -507,8 +606,8 @@ function renderPubList(){
   const list=PUBS.filter(p=>!q||p.name.toLowerCase().includes(q));
   const shown=visibleTeamsOnMap();
   const legend=shown.map(t=>{const lp=lastPubOf(t.id);return `<div class="row sm" style="gap:8px"><span class="dot" style="background:${t.color}"></span><b>${esc(t.name)}</b><span class="spacer"></span><span class="muted">${lp?esc(lp.name):"Not started"}</span></div>`;}).join("");
-  const hiddenNote=!isAdmin()&&!D.settings.showOthers?'<span class="sm muted">Other teams are hidden. The chicken can switch them on.</span>':"";
-  el.innerHTML=`<div class="card" style="gap:8px"><span class="lbl">${isAdmin()||D.settings.showOthers?"Teams last seen":"Your team"}</span>${legend||'<span class="sm muted">Join a team to see your trail here.</span>'}${hiddenNote}<div class="row sm" style="gap:8px"><span class="dot" style="background:${chicken().color}"></span><b>${esc(chicken().name)}</b><span class="spacer"></span><span class="pill yolk">Hiding</span></div></div>
+  const hiddenNote=!isAdmin()?'<span class="sm muted">Other teams are hidden. Only the chicken can see where everyone is.</span>':"";
+  el.innerHTML=`<div class="card" style="gap:8px"><span class="lbl">${isAdmin()?"Teams last seen":"Your team"}</span>${legend||'<span class="sm muted">Join a team to see your trail here.</span>'}${hiddenNote}<div class="row sm" style="gap:8px"><span class="dot" style="background:${chicken().color}"></span><b>${esc(chicken().name)}</b><span class="spacer"></span><span class="pill yolk">Hiding</span></div></div>
     <input type="search" id="mapq" placeholder="Search pubs" value="${esc(S.q)}" aria-label="Search pubs" autocomplete="off">
     <div class="items">${list.map(p=>`<button class="pubrow ${S.selPub===p.id?"sel":""}" data-action="focuspub" data-pub="${p.id}">
       <span class="ic ${p.id===START.id?"start":""} ${seen.has(p.id)?"done":""}">${seen.has(p.id)?"✓":p.id===START.id?"GO":fmtMi(p.d).replace(" mi","")}</span>
@@ -571,18 +670,37 @@ function signinSheet(){
 }
 
 /* =================== ADMIN =================== */
-const ATABS=[["review","Review"],["game","Game"],["teams","Teams & players"],["clues","Hideout & clues"],["challenges","Pubs & challenges"],["rules","Rules"]];
+const ATABS=[["activity","Activity"],["review","Review"],["game","Game"],["teams","Teams & players"],["clues","Hideout & clues"],["challenges","Pubs & challenges"],["rules","Rules"]];
 function viewAdmin(){
   const pc=pending().length;
+  const uc=unseenCount();
   let h=`<div><h1>Chicken HQ</h1><p class="muted">Organisers only. You can see every team, approve evidence and set up the game.</p></div>
     ${S.mode==="local"?'<div class="banner yolk">Demo mode: everything saves on this device only. Add your Supabase details to config.js to run the real game.</div>':`<div class="row sm"><span class="muted">Signed in as ${esc(S.me.email||"")}</span><span class="spacer"></span><button class="btn sm" data-action="signout">Sign out</button></div>`}
-    <div class="segs" role="group" aria-label="Chicken HQ sections">${ATABS.map(([k,l])=>`<button type="button" data-action="atab" data-k="${k}" aria-pressed="${S.adminTab===k}">${l}${k==="review"&&pc?` <span class="cnt">${pc}</span>`:""}</button>`).join("")}</div>`;
-  h+=({review:adminReview,game:adminGame,teams:adminTeams,clues:adminClues,challenges:adminChallenges,rules:adminRules})[S.adminTab]();
+    <div class="segs" role="group" aria-label="Chicken HQ sections">${ATABS.map(([k,l])=>`<button type="button" data-action="atab" data-k="${k}" aria-pressed="${S.adminTab===k}">${l}${k==="review"&&pc?` <span class="cnt">${pc}</span>`:k==="activity"&&uc?` <span class="cnt">${uc}</span>`:""}</button>`).join("")}</div>`;
+  h+=({activity:adminActivity,review:adminReview,game:adminGame,teams:adminTeams,clues:adminClues,challenges:adminChallenges,rules:adminRules})[S.adminTab]();
   return h;
 }
 function mediaHtml(s){return (s.media||[]).map(m=>{const u=signedUrl(m); if(!u) return `<div class="media-ph">${m.demo?"Demo photo":"Loading…"}</div>`;
   return m.type&&m.type.startsWith("video")?`<video src="${esc(u)}" controls playsinline preload="metadata"></video>`:`<a href="${esc(u)}" target="_blank" rel="noopener"><img src="${esc(u)}" alt="Evidence photo" loading="lazy"></a>`;}).join("");}
 function memberName(userId){const m=D.members.find(x=>x.user_id===userId); return m&&m.display_name?m.display_name:"";}
+/* check-in feed: organisers only (the database never sends other teams' visits to players) */
+function lastSeenLine(tid){
+  const v=visitsOf(tid), last=v[v.length-1];
+  if(!last) return `<span class="sm muted">No check-ins yet</span>`;
+  const p=pubById(last.pub), stale=live()&&!D.found[tid]&&Date.now()-last.at>STALE_MIN*60000;
+  return `<span class="sm lastseen ${stale?"stale":""}" ${D.found[tid]?"":`data-stale="${last.at}"`}>Last checked in to <b>${esc(p?p.name:"?")}</b> · ${hhmm(last.at)} · ${agoSpan(last.at)}</span>`;
+}
+function adminActivity(){
+  const f=S.actTeam, list=allVisits().filter(v=>!f||v.team===f).slice(0,150);
+  const rows=list.map(v=>{const t=teamById(v.team)||{name:v.team,color:"#888"}, p=pubById(v.pub), n=visitsOf(v.team).findIndex(x=>x.pub===v.pub)+1, sf=selfieFor(v.team,v.pub), u=signedUrl(sf);
+    return `<div class="trow act ${v.at>(S.prevSeen||S.seenAt)?"new":""}"><span class="dot" style="background:${t.color};width:14px;height:14px"></span>
+      <div style="min-width:0"><b>Team ${t.num??""} · ${esc(t.name)}</b><div class="sm">checked in to <b>${esc(p?p.name:"?")}</b> <span class="muted">(pub ${n})</span></div><div class="sm muted">${hhmm(v.at)} · ${agoSpan(v.at)}</div></div>
+      ${sf?`<button class="sthumb" data-action="viewselfie" data-team="${v.team}" data-pub="${v.pub}" aria-label="View selfie">${u?`<img src="${esc(u)}" alt="">`:""}</button>`:'<span class="pill">No selfie</span>'}</div>`;}).join("");
+  return `<div class="card"><h2>Where everyone is</h2>${hunters().map(t=>`<div class="trow"><span class="dot" style="background:${t.color}"></span><div style="min-width:0"><b>${esc(t.name)}</b><div>${D.found[t.id]?'<span class="sm muted">Found the chicken</span>':lastSeenLine(t.id)}</div></div><span></span></div>`).join("")}</div>
+    <div class="card"><div class="row"><h2>Check-ins</h2><span class="spacer"></span><select id="actteam" aria-label="Filter by team" style="width:auto"><option value="">All teams</option>${hunters().map(t=>`<option value="${t.id}" ${f===t.id?"selected":""}>Team ${t.num??""} · ${esc(t.name)}</option>`).join("")}</select></div>
+      <p class="sm muted">Only organisers see this. A pop-up appears here the moment any team checks in.</p>
+      ${rows||'<div class="empty"><span>No check-ins yet.</span></div>'}</div>`;
+}
 function adminReview(){
   const p=pending(), done=D.subs.filter(s=>s.status!=="pending").slice(0,12);
   const subCard=s=>{const t=teamById(s.team)||{name:s.team,color:"#888"}, pub=pubById(s.pub), c=D.challenges[s.pub]||D.challenges._all, n=(D.unlocked[s.team]||[]).length;
@@ -601,10 +719,9 @@ function adminReview(){
 function adminGame(){
   const st=D.settings.state, sw=(id,on,label,help)=>`<label class="switch" for="${id}"><input type="checkbox" id="${id}" data-setting="${id.replace("set-","")}" ${on?"checked":""}><span class="track"><span class="knob"></span></span><span><b>${label}</b><span class="sm muted" style="display:block">${help}</span></span></label>`;
   return `<div class="card"><h2>Game state</h2>
-      <div class="statebar">${[["setup","Not started","Players can join teams. No check-ins yet."],["live","Live","Check-ins and evidence are open."],["finished","Finished","Check-ins close. Scores are revealed to everyone."]].map(([k,l,hlp])=>
+      <div class="statebar">${[["setup","Not started","Players can join teams. No check-ins yet."],["live","Live","Check-ins and evidence are open."],["finished","Finished","Check-ins close. Scores and the selfie gallery are revealed to everyone."]].map(([k,l,hlp])=>
         `<button type="button" class="statebtn ${st===k?"on":""}" data-action="setstate" data-k="${k}" aria-pressed="${st===k}"><b>${l}</b><span class="sm">${hlp}</span></button>`).join("")}</div></div>
-    <div class="card"><h2>What teams can see</h2>
-      ${sw("set-showOthers",D.settings.showOthers===true,"Show other teams on the map","Off: each team only sees its own trail.")}
+    <div class="card"><h2>What teams can see</h2><p class="sm muted">Each team only ever sees its own check-ins. Only organisers see where every team is.</p>
       ${sw("set-showBoard",D.settings.showBoard===true,"Show the leaderboard during the game","Off: scores are revealed when you finish the game.")}</div>
     <div class="card"><h2>Settings</h2>
       <div class="grid2" style="gap:12px">
@@ -620,9 +737,10 @@ function adminGame(){
 }
 function adminTeams(){
   const byTeam={}; D.members.forEach(m=>(byTeam[m.team_id]=byTeam[m.team_id]||[]).push(m));
-  return `<div class="card"><h2>Live progress</h2>${hunters().map(t=>{const n=(D.unlocked[t.id]||[]).length, f=D.found[t.id], lp=lastPubOf(t.id);
+  return `<div class="card"><h2>Live progress</h2>${hunters().map(t=>{const n=(D.unlocked[t.id]||[]).length, f=D.found[t.id];
     return `<div class="trow" style="grid-template-columns:auto 1fr;align-items:start"><span class="dot" style="background:${t.color};width:14px;height:14px;margin-top:4px"></span>
-      <div style="display:grid;gap:8px;min-width:0"><div class="row"><b>Team ${t.num??""} · ${esc(t.name)}</b><span class="sm muted">${visitsOf(t.id).length} pubs · ${n} clues${lp?` · at ${esc(lp.name)}`:""}</span></div>
+      <div style="display:grid;gap:8px;min-width:0"><div class="row"><b>Team ${t.num??""} · ${esc(t.name)}</b><span class="sm muted">${visitsOf(t.id).length} pubs · ${n} clues · ${visitsOf(t.id).filter(v=>selfieFor(t.id,v.pub)).length}/${visitsOf(t.id).length} selfies</span></div>
+      ${lastSeenLine(t.id)}
       <div class="row" style="gap:6px"><button class="btn sm" data-action="unlock" data-team="${t.id}">Unlock clue ${n+1}</button>
         ${n?`<button class="btn sm ghost" data-action="relock" data-team="${t.id}">Re-lock clue ${n}</button>`:""}
         <button class="btn sm ${f?"":"good"}" data-action="found" data-team="${t.id}">${f?"Undo found":"Mark found"}</button>
@@ -722,7 +840,7 @@ document.addEventListener("click",async e=>{
   const a=e.target.closest("[data-action]"); if(!a) return;
   const act_=a.dataset.action;
   if(act_==="closesheet"){ if(e.target===a||a.tagName==="BUTTON") closeSheet(); return; }
-  if(act_==="pickfiles"||act_==="note") return;
+  if(act_==="pickfiles"||act_==="pickselfie"||act_==="note") return;
   e.preventDefault();
   try{ switch(act_){
     case "jointeam": location.hash="play"; renderAll(); setTimeout(()=>{const n=document.getElementById("joinnum"); if(n) n.focus();},50); break;
@@ -743,16 +861,21 @@ document.addEventListener("click",async e=>{
         <button class="btn primary block" data-action="docheckin" data-pub="${p.id}">Yes, we're here</button><button class="btn block ghost" data-action="closesheet">Cancel</button>`); break; }
     case "docheckin": { const tid=myTeamId(), p=pubById(a.dataset.pub); a.disabled=true;
       closeSheet(); if(LM) LM.closePopup();
-      await act(()=>api.checkIn(tid,p.id),`Checked in to ${p.name}. Get the drinks in.`).catch(()=>{});
-      S.chal={}; location.hash="play"; window.scrollTo(0,0); break; }
-    case "undovisit": await act(()=>api.undoVisit(myTeamId(),a.dataset.pub),"Check-in removed.").catch(()=>{}); break;
+      const ok=await act(()=>api.checkIn(tid,p.id),`Checked in to ${p.name}. Get the drinks in.`).then(()=>true,()=>false);
+      S.chal={}; location.hash="play"; window.scrollTo(0,0);
+      if(ok&&!S.viewAs) openSheet(selfieSheet(tid,p.id));
+      break; }
+    case "undovisit": { const tid=myTeamId(), pub=a.dataset.pub, sf=selfieFor(tid,pub);
+      await act(async()=>{ if(sf) await api.deleteSelfie(tid,pub,sf.path); await api.undoVisit(tid,pub); },"Check-in removed.").catch(()=>{}); break; }
+    case "viewselfie": openSheet(selfieViewSheet(a.dataset.team,a.dataset.pub)); break;
+    case "galby": S.galBy=a.dataset.k; renderView("gallery"); break;
     case "openchal": openSheet(`<div class="row"><span class="spacer"></span><button class="btn sm ghost" data-action="closesheet">Close</button></div>${challengeCard(myTeamId(),a.dataset.pub,+a.dataset.i)}`); break;
     case "submit": submitEvidence(a.dataset.team,a.dataset.pub,+a.dataset.i); break;
     case "fit": fitAll(); break;
     case "gostart": if(LM){LM.flyTo([START.lat,START.lng],17);pubMarkers[START.id].openPopup();} break;
     case "focuspub": { const p=pubById(a.dataset.pub); S.selPub=p.id; renderPubList(); stylePubs(); if(LM){LM.flyTo([p.lat,p.lng],Math.max(LM.getZoom(),16.5));setTimeout(()=>pubMarkers[p.id].openPopup(),350);}
       if(matchMedia("(max-width:900px)").matches) document.querySelector(".mapbox").scrollIntoView({behavior:"smooth",block:"start"}); break; }
-    case "atab": S.adminTab=a.dataset.k; renderView("admin"); break;
+    case "atab": S.adminTab=a.dataset.k; if(S.adminTab==="activity") markSeen(); renderAll(); break;
     case "approve": { const s=D.subs.find(x=>x._id===a.dataset.id); if(!s) break; a.disabled=true; const n=(D.unlocked[s.team]||[]).length;
       await act(()=>api.approve(s._id,autoClue(n,pubById(s.pub))),r=>`Clue ${r||n+1} unlocked for ${(teamById(s.team)||{}).name}.`).catch(()=>{}); break; }
     case "reject": { const r=document.getElementById("rej-"+a.dataset.id); await act(()=>api.reject(a.dataset.id,r?r.value.trim():""),"Sent back to the team.").catch(()=>{}); break; }
@@ -818,7 +941,9 @@ document.addEventListener("keydown",e=>{
 });
 document.addEventListener("change",async e=>{
   const el=e.target;
-  if(el.dataset.action==="pickfiles"){const dk=el.dataset.key, d=(S.draft[dk]=S.draft[dk]||{files:[],note:""});
+  if(el.dataset.action==="pickselfie"){ const f=el.files&&el.files[0]; if(f) uploadSelfie(el.dataset.team,el.dataset.pub,f); }
+  else if(el.id==="actteam"){ S.actTeam=el.value; renderView("admin"); }
+  else if(el.dataset.action==="pickfiles"){const dk=el.dataset.key, d=(S.draft[dk]=S.draft[dk]||{files:[],note:""});
     Array.from(el.files).slice(0,4).forEach(f=>d.files.push({file:f,type:f.type||"image/jpeg",preview:URL.createObjectURL(f)}));
     const [tid,pub]=dk.split("|"); const i=visitsOf(tid).findIndex(v=>v.pub===pub);
     if(el.closest(".sheet")) openSheet(`<div class="row"><span class="spacer"></span><button class="btn sm ghost" data-action="closesheet">Close</button></div>${challengeCard(tid,pub,i)}`); else renderView("play");}
@@ -832,10 +957,11 @@ document.addEventListener("mouseout",e=>{const r=e.target.closest&&e.target.clos
   if(r.contains(e.relatedTarget)) return; const m=pubMarkers[r.dataset.pub]; if(m&&m.closeTooltip) m.closeTooltip();});
 
 /* =================== render =================== */
-const VIEWS={play:viewPlay,teams:viewTeams,rules:viewRules,admin:viewAdmin};
+const VIEWS={play:viewPlay,teams:viewTeams,gallery:viewGallery,rules:viewRules,admin:viewAdmin};
 function renderView(k){ if(VIEWS[k]){const el=document.getElementById("v-"+k); el.innerHTML=VIEWS[k](); } }
 function renderAll(){
   if(!D.teams) derive();
+  if(route()==="admin"&&S.adminTab==="activity"&&document.visibilityState==="visible"&&unseenCount()) markSeen();
   renderChrome(); const r=route();
   if(r==="map"){ initMap(); if(LM) setTimeout(()=>LM.invalidateSize(),0); renderPubList(); renderMapDynamic(); }
   else { const a=document.activeElement, typing=a&&(a.tagName==="TEXTAREA"||(a.tagName==="INPUT"&&!["file","checkbox"].includes(a.type))||a.tagName==="SELECT")&&document.getElementById("v-"+r).contains(a);
@@ -854,12 +980,29 @@ async function applySession(session){
   if(session&&S.me.email){ const r=await sb.rpc("is_admin"); S.me.isAdmin=!r.error&&r.data===true; }
   S.chal={}; S.signed={};
 }
+/* organisers get a pop-up for every check-in and selfie. Players never receive other teams' rows, so they never see these. */
+function organiserAlert(table,payload){
+  if(!S.me.isAdmin||!payload||!payload.new) return;
+  const r=payload.new; if(r.by_user&&r.by_user===S.me.userId) return;
+  const t=teamById(r.team_id), p=pubById(r.pub_id); if(!t) return;
+  let msg="";
+  if(table==="visits"&&payload.eventType==="INSERT") msg=`Team ${t.num??""} · ${t.name} checked in to ${p?p.name:"a pub"}`;
+  else if(table==="selfies"&&(payload.eventType==="INSERT"||payload.eventType==="UPDATE")) msg=`📸 ${t.name} ${payload.eventType==="UPDATE"?"retook their":"added a"} selfie at ${p?p.name:"a pub"}`;
+  if(!msg) return;
+  toast(msg,6000);
+  if(navigator.vibrate) try{ navigator.vibrate(120); }catch(e){}
+}
+/* keep "x min ago" and the overdue highlight current without re-drawing the page (which would wipe unsaved form edits) */
+setInterval(()=>{
+  document.querySelectorAll("[data-ago]").forEach(el=>{el.textContent=ago(+el.dataset.ago);});
+  document.querySelectorAll("[data-stale]").forEach(el=>{el.classList.toggle("stale",live()&&Date.now()-(+el.dataset.stale)>STALE_MIN*60000);});
+},30000);
 let channel=null;
 function subscribe(){
   if(channel) sb.removeChannel(channel);
   channel=sb.channel("game-"+uid());
-  ["settings","teams","team_rosters","team_members","pub_info","challenges","secret","visits","submissions","unlocked","found"].forEach(t=>
-    channel.on("postgres_changes",{event:"*",schema:"public",table:t},()=>{ if(t==="visits"||t==="settings"||t==="challenges") S.chal={}; softRefresh(); }));
+  ["settings","teams","team_rosters","team_members","pub_info","challenges","secret","visits","submissions","selfies","unlocked","found"].forEach(t=>
+    channel.on("postgres_changes",{event:"*",schema:"public",table:t},payload=>{ if(t==="visits"||t==="settings"||t==="challenges") S.chal={}; organiserAlert(t,payload); softRefresh(); }));
   channel.subscribe();
 }
 (async()=>{
@@ -878,7 +1021,7 @@ function subscribe(){
         else if(ev==="SIGNED_IN"&&S.me.email&&!S.me.isAdmin) toast("Signed in, but this email isn't on the organiser list."); });
     }
   });
-  setInterval(()=>{ if(document.visibilityState==="visible"&&(D.settings.showOthers||D.settings.showBoard)) refresh(); },45000);
+  setInterval(()=>{ if(document.visibilityState==="visible"&&D.settings.showBoard) refresh(); },45000);
   document.addEventListener("visibilitychange",()=>{ if(document.visibilityState==="visible") refresh(); });
 })();
 if("serviceWorker" in navigator && location.protocol==="https:") navigator.serviceWorker.register("sw.js").catch(()=>{});
