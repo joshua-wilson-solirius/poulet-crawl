@@ -57,6 +57,23 @@ do $$ begin
   exception when insufficient_privilege then null; end;
 end $$;
 insert into public.submissions (team_id, pub_id, stop, note) values (public.my_team(), 'p2', 2, 'proof');
+
+-- selfies: only at a pub the team has checked in to, only for its own team
+insert into public.selfies (team_id, pub_id, path) values (public.my_team(), 'p1', 'team1/p1/a.jpg');
+insert into public.selfies (team_id, pub_id, path) values (public.my_team(), 'p2', 'team1/p2/a.jpg')
+  on conflict (team_id, pub_id) do update set path = excluded.path;
+update public.selfies set path = 'team1/p2/b.jpg' where pub_id = 'p2';
+do $$ begin assert (select path from public.selfies where pub_id = 'p2') = 'team1/p2/b.jpg', 'team can retake its own selfie'; end $$;
+do $$ begin
+  begin insert into public.selfies (team_id, pub_id, path) values (public.my_team(), 'p9', 'x.jpg');
+        raise exception 'FAIL: selfie added for a pub the team never checked in to';
+  exception when foreign_key_violation then null; end;
+end $$;
+do $$ begin
+  begin insert into public.selfies (team_id, pub_id, path) values ((select id from public.teams where num = 2), 'p1', 'x.jpg');
+        raise exception 'FAIL: selfie added for another team';
+  exception when insufficient_privilege then null; end;
+end $$;
 update public.submissions set status = 'approved';          -- silently affects 0 rows under RLS
 do $$ begin assert (select count(*) from public.submissions where status = 'approved') = 0, 'player cannot approve own evidence'; end $$;
 do $$ begin
@@ -84,6 +101,9 @@ do $$ begin assert (select count(*) from public.team_members) = 1, 'only own tea
 do $$ begin assert (select count(*) from public.team_positions()) = 0, 'other team positions hidden while showOthers is off'; end $$;
 do $$ begin assert (select count(*) from public.leaderboard()) = 1, 'leaderboard shows own team only while hidden'; end $$;
 do $$ begin assert public.get_challenge('p2') is null, 'cannot read another team''s challenge pub'; end $$;
+do $$ begin assert (select count(*) from public.selfies) = 0, 'other team selfies hidden during the game'; end $$;
+do $$ begin assert not public.can_see_selfies((select id from public.teams where num = 1)), 'other team selfie files hidden during the game'; end $$;
+delete from public.selfies;                                  -- silently affects 0 rows under RLS
 
 -- ---------- unconfirmed "organiser" email is not an organiser ----------
 select pg_temp.as_admin_db();
@@ -97,6 +117,8 @@ select pg_temp.act_as('00000000-0000-0000-0000-0000000000a1');
 do $$ begin assert public.is_admin(), 'organiser recognised'; end $$;
 do $$ begin assert (select count(*) from public.secret) = 1, 'organiser reads secret'; end $$;
 do $$ begin assert (select count(*) from public.visits) = 2, 'organiser sees all visits'; end $$;
+do $$ begin assert (select count(*) from public.selfies) = 2, 'organiser sees every selfie, and other teams could not delete them'; end $$;
+do $$ begin assert (select count(*) from public.team_positions()) = 1, 'organiser sees every team position'; end $$;
 do $$ begin assert public.approve_submission((select id from public.submissions limit 1), 'auto text') = 1, 'approve unlocks clue 1'; end $$;
 do $$ begin assert (select body from public.unlocked where n = 1) = 'first clue', 'clue 1 comes from the clue list'; end $$;
 do $$ begin assert public.unlock_clue((select id from public.teams where num = 1), 'auto two') = 2, 'manual unlock gives clue 2'; end $$;
@@ -106,7 +128,7 @@ update public.settings set data = data || '{"showOthers":true}' where id = 1;
 -- ---------- visibility switch ----------
 select pg_temp.as_admin_db();
 select pg_temp.act_as('00000000-0000-0000-0000-0000000000b2');
-do $$ begin assert (select count(*) from public.team_positions()) = 1, 'showOthers reveals other team positions'; end $$;
+do $$ begin assert (select count(*) from public.team_positions()) = 0, 'other team positions stay hidden even with the old showOthers switch on'; end $$;
 do $$ begin assert (select count(*) from public.unlocked) = 0, 'other team clues still hidden'; end $$;
 
 -- ---------- game not live: no check-ins ----------
@@ -118,12 +140,42 @@ do $$ begin
   exception when insufficient_privilege then null; end;
 end $$;
 
+-- ---------- game finished: selfie gallery opens to joined players ----------
+select pg_temp.as_admin_db();
+update public.settings set data = data || '{"state":"finished"}' where id = 1;
+select pg_temp.act_as('00000000-0000-0000-0000-0000000000b2');
+do $$ begin assert (select count(*) from public.selfies) = 2, 'finished game shows every team''s selfies'; end $$;
+do $$ begin assert public.can_see_selfies((select id from public.teams where num = 1)), 'finished game opens other team selfie files'; end $$;
+do $$ begin assert (select count(*) from public.visits) = 0, 'other team check-ins stay hidden after the game'; end $$;
+do $$ begin
+  begin insert into public.selfies (team_id, pub_id, path) values (public.my_team(), 'p1', 'x.jpg');
+        raise exception 'FAIL: selfie added after the game finished';
+  exception when insufficient_privilege or foreign_key_violation then null; end;
+end $$;
+
+-- player 1 removes a check-in: its selfie goes with it
+select pg_temp.as_admin_db();
+update public.settings set data = data || '{"state":"live"}' where id = 1;
+delete from public.submissions;
+select pg_temp.act_as('00000000-0000-0000-0000-0000000000b1');
+delete from public.visits where pub_id = 'p2';
+do $$ begin assert (select count(*) from public.selfies) = 1, 'undoing a check-in removes its selfie'; end $$;
+
+-- a joined player who isn't an organiser can't see selfies before the end, even with no team of their own
+select pg_temp.as_admin_db();
+select pg_temp.act_as('00000000-0000-0000-0000-0000000000c1');
+do $$ begin assert (select count(*) from public.selfies) = 0, 'account with no team sees no selfies'; end $$;
+
 -- ---------- visitor (not signed in) ----------
 select pg_temp.as_admin_db();
 set local role anon;
 do $$ begin assert (select count(*) from public.teams) > 0, 'visitor sees team names'; end $$;
 do $$ begin
   begin perform count(*) from public.visits; raise exception 'FAIL: visitor read visits';
+  exception when insufficient_privilege then null; end;
+end $$;
+do $$ begin
+  begin perform count(*) from public.selfies; raise exception 'FAIL: visitor read selfies';
   exception when insufficient_privilege then null; end;
 end $$;
 

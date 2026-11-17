@@ -38,11 +38,17 @@ Players join on their phone by typing their team number (1, 2, 3 …). Organiser
 | A pub's challenge | | once at that challenge pub | ✗ | ✓ + edit |
 | Hideout and clue list | | ✗ | ✗ | ✓ |
 | Approve evidence, unlock clues, mark found | | ✗ | ✗ | ✓ |
-| Other teams on map / leaderboard | | organiser's switch | organiser's switch | ✓ |
+| Team selfies (one per pub) | | ✓ add, retake | after the game, in the Gallery | ✓ |
+| Where other teams are (map, last check-in) | | ✗ | ✗ | ✓ + live alerts |
+| Leaderboard | | organiser's switch | organiser's switch | ✓ |
 | Move or remove players, edit teams, rules, settings, game state | | ✗ | ✗ | ✓ |
 
 All of this is enforced by row-level security in the database (`supabase/schema.sql`), not just hidden in the app.
-Evidence lives in a private storage bucket with one folder per team, and is shown through links that expire after an hour.
+Evidence and selfies live in private storage buckets with one folder per team, and are shown through links that expire after an hour.
+Selfies open to every player who joined a team once an organiser sets the game to **Finished**.
+
+Organisers get a pop-up on their phone whenever a team checks in or adds a selfie, while the app is open. Chicken HQ → **Activity** lists every check-in
+and shows when each team last checked in. A team turns amber after 45 minutes without a check-in.
 
 ## Data credits
 

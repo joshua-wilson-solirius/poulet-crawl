@@ -77,6 +77,17 @@ create table if not exists public.submissions (
 );
 create index if not exists submissions_team_idx on public.submissions(team_id, pub_id, at desc);
 
+-- One team selfie per pub visited. Removing the check-in removes its selfie row.
+create table if not exists public.selfies (
+  team_id text not null,
+  pub_id  text not null,
+  path    text not null,                        -- file in the private selfies bucket
+  at      timestamptz not null default now(),
+  by_user uuid default auth.uid(),
+  primary key (team_id, pub_id),
+  foreign key (team_id, pub_id) references public.visits(team_id, pub_id) on delete cascade
+);
+
 create table if not exists public.unlocked (
   team_id text not null references public.teams(id) on delete cascade,
   n       int not null,
@@ -177,13 +188,20 @@ begin
   return json_build_object('title', v_title, 'body', v_body);
 end $$;
 
--- Where teams were last seen: your own team always; everyone if organisers switch on showOthers.
+-- Where teams were last seen: your own team only. Organisers see every team.
 create or replace function public.team_positions() returns table (team_id text, pub_id text, at timestamptz)
 language sql stable security definer set search_path = public as $$
   select distinct on (v.team_id) v.team_id, v.pub_id, v.at
   from public.visits v
-  where public.is_admin() or v.team_id = public.my_team() or public.setting('showOthers') = 'true'
+  where public.is_admin() or v.team_id = public.my_team()
   order by v.team_id, v.at desc;
+$$;
+
+-- Selfies: your own team during the game; every team once the game has finished (players who joined a team only).
+create or replace function public.can_see_selfies(p_team text) returns boolean
+language sql stable security definer set search_path = public as $$
+  select public.is_admin() or p_team = public.my_team()
+      or (public.setting('state') = 'finished' and public.my_team() is not null);
 $$;
 
 -- Scores: your own team always; every team if showBoard is on or the game has finished.
@@ -251,7 +269,7 @@ end $$;
 -- Row-level security
 -- ---------------------------------------------------------------
 do $$ declare t text; begin
-  foreach t in array array['admins','settings','teams','team_rosters','team_members','pub_info','challenges','secret','visits','submissions','unlocked','found'] loop
+  foreach t in array array['admins','settings','teams','team_rosters','team_members','pub_info','challenges','secret','visits','submissions','selfies','unlocked','found'] loop
     execute format('alter table public.%I enable row level security', t);
   end loop;
 end $$;
@@ -297,6 +315,15 @@ create policy subs_insert    on public.submissions for insert to authenticated
 create policy subs_admin     on public.submissions for update to authenticated using (public.is_admin()) with check (public.is_admin());
 create policy subs_delete    on public.submissions for delete to authenticated using (public.is_admin());
 
+create policy selfies_read   on public.selfies for select to authenticated using (public.can_see_selfies(team_id));
+create policy selfies_insert on public.selfies for insert to authenticated
+  with check (public.is_admin() or (team_id = public.my_team() and public.setting('state') = 'live'));
+create policy selfies_update on public.selfies for update to authenticated
+  using (public.is_admin() or (team_id = public.my_team() and public.setting('state') = 'live'))
+  with check (public.is_admin() or (team_id = public.my_team() and public.setting('state') = 'live'));
+create policy selfies_delete on public.selfies for delete to authenticated
+  using (public.is_admin() or (team_id = public.my_team() and public.setting('state') = 'live'));
+
 create policy unlocked_read  on public.unlocked for select to authenticated using (team_id = public.my_team() or public.is_admin());
 create policy unlocked_admin on public.unlocked for all    to authenticated using (public.is_admin()) with check (public.is_admin());
 
@@ -309,7 +336,7 @@ grant usage on schema public to anon, authenticated;
 grant select on public.settings, public.teams, public.pub_info to anon;
 grant select, insert, update, delete on all tables in schema public to authenticated;
 revoke insert on public.team_members from authenticated;   -- joining only through join_team()
-grant execute on function public.is_admin(), public.my_team(), public.setting(text), public.join_team(int, text),
+grant execute on function public.is_admin(), public.my_team(), public.setting(text), public.can_see_selfies(text), public.join_team(int, text),
   public.get_challenge(text), public.team_positions(), public.leaderboard(),
   public.approve_submission(uuid, text), public.reject_submission(uuid, text),
   public.unlock_clue(text, text, text), public.relock_clue(text) to anon, authenticated;
@@ -318,7 +345,7 @@ grant execute on function public.is_admin(), public.my_team(), public.setting(te
 -- Live updates (row-level security still applies to what each phone receives)
 -- ---------------------------------------------------------------
 do $$ declare t text; begin
-  foreach t in array array['settings','teams','team_rosters','team_members','pub_info','challenges','secret','visits','submissions','unlocked','found'] loop
+  foreach t in array array['settings','teams','team_rosters','team_members','pub_info','challenges','secret','visits','submissions','selfies','unlocked','found'] loop
     begin execute format('alter publication supabase_realtime add table public.%I', t);
     exception when duplicate_object then null; end;
   end loop;
@@ -340,6 +367,25 @@ create policy evidence_read on storage.objects for select to authenticated
   using (bucket_id = 'evidence' and ((storage.foldername(name))[1] = public.my_team() or public.is_admin()));
 create policy evidence_delete on storage.objects for delete to authenticated
   using (bucket_id = 'evidence' and public.is_admin());
+
+-- ---------------------------------------------------------------
+-- Selfies: private bucket, one folder per team, images only, 5 MB per file.
+-- Readable by the team and organisers during the game, and by every joined player once it has finished.
+-- ---------------------------------------------------------------
+insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+values ('selfies', 'selfies', false, 5242880, array['image/*'])
+on conflict (id) do update set public = false, file_size_limit = 5242880, allowed_mime_types = array['image/*'];
+
+drop policy if exists selfies_upload on storage.objects;
+drop policy if exists selfies_read   on storage.objects;
+drop policy if exists selfies_delete on storage.objects;
+create policy selfies_upload on storage.objects for insert to authenticated
+  with check (bucket_id = 'selfies' and (storage.foldername(name))[1] = public.my_team() and public.setting('state') = 'live');
+create policy selfies_read on storage.objects for select to authenticated
+  using (bucket_id = 'selfies' and public.can_see_selfies((storage.foldername(name))[1]));
+create policy selfies_delete on storage.objects for delete to authenticated
+  using (bucket_id = 'selfies' and (public.is_admin()
+         or ((storage.foldername(name))[1] = public.my_team() and public.setting('state') = 'live')));
 
 -- ---------------------------------------------------------------
 -- Organiser login
