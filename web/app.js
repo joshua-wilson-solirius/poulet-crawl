@@ -16,7 +16,7 @@ const DEFAULT_TEAMS = [
   {id:"rangers", num:3,    name:"Free Rangers", color:"#12A594", members:["Hana","Ben","Zara"]},
   {id:"hens",    num:4,    name:"Hen Party",    color:"#8E4EC6", members:["Rosie","Kwame","Lily"]},
 ];
-const DEFAULT_SETTINGS = {interval:2, state:"setup", showBoard:false, buyIn:"£15", start:""};
+const DEFAULT_SETTINGS = {interval:2, state:"setup", showBoard:false, buyIn:"£15", start:"", budget:0};
 const PALETTE = ["#E5484D","#3E63DD","#12A594","#8E4EC6","#F76B15","#D6409F","#0090FF","#46A758","#E0A100","#6E56CF"];
 function defaultRules(){
   const ch=chicken();
@@ -87,6 +87,7 @@ const ago=t=>{const m=Math.round((Date.now()-ms(t))/60000);return m<1?"just now"
 /* a time that keeps itself up to date: the 30-second ticker rewrites every [data-ago] */
 const agoSpan=t=>`<span data-ago="${ms(t)}">${ago(t)}</span>`;
 const STALE_MIN=45;
+const money=n=>{const v=Math.round(Math.abs(n)*100)/100; return (n<0?"−":"")+"£"+(v%1?v.toFixed(2):String(v));};
 const hhmm=t=>new Date(ms(t)).toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"});
 const gmaps=p=>"https://www.google.com/maps/dir/?api=1&travelmode=walking&destination="+p.lat+","+p.lng;
 const uid=()=>Math.random().toString(36).slice(2,10)+Date.now().toString(36);
@@ -100,6 +101,7 @@ const ICON={
   cam:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/></svg>',
   lock:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>',
   gallery:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="2"/><path d="m21 16-5-5-9 9"/></svg>',
+  kitty:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8h11l-1 12H7L6 8Z"/><path d="M17 10h1.5a2.5 2.5 0 0 1 0 5H16.6"/><path d="M8 4c0 1 1 1 1 2M12 3c0 1 1 1 1 2"/></svg>',
   walk:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="13" cy="4" r="2"/><path d="m9 21 2-6 3 3v3M7 12l3-4 4 1 3 3M11 15l-1-4"/></svg>',
 };
 let toastT;
@@ -119,7 +121,7 @@ function errText(e){const m=(e&&(e.message||e.error_description||e.msg))||String
 
 /* =================== raw data (what this phone is allowed to see) =================== */
 const R = {settings:{}, teams:[], rosters:{}, members:[], pubinfo:{}, challenges:{}, secret:{hideout:null,clues:[]},
-           visits:[], subs:[], selfies:[], unlocked:[], found:[], positions:[], board:[], admins:[], myTeam:null};
+           visits:[], subs:[], selfies:[], spends:[], unlocked:[], found:[], positions:[], board:[], admins:[], myTeam:null};
 const S = {mode:"connecting", loaded:false, me:{email:null,isAdmin:false,userId:null}, adminTab:"activity", q:"", cq:"", selPub:null, draft:{},
            chal:{}, viewAs:null, signed:{}, galBy:"team", actTeam:"", seenAt:ls.get("seenAct")||Date.now(), selfieBusy:null};
 
@@ -137,7 +139,10 @@ function derive(){
   const found={}; R.found.forEach(f=>{found[f.team_id]={at:ms(f.at)};});
   R.board.forEach(b=>{ if(b.found_at&&!found[b.team_id]) found[b.team_id]={at:ms(b.found_at)}; });
   const positions={}; R.positions.forEach(p=>{positions[p.team_id]={pub:p.pub_id,at:ms(p.at)};});
-  D={settings, teams, visits, subs, selfies, unlocked, found, positions, board:R.board,
+  const spends=R.spends.map(x=>({id:x.id,amount:+x.amount,note:x.note||"",at:ms(x.at)})).sort((a,b)=>b.at-a.at);
+  const kitty={total:Math.max(0,parseFloat(settings.budget)||0), spent:Math.round(spends.reduce((t,x)=>t+x.amount,0)*100)/100};
+  kitty.left=Math.round((kitty.total-kitty.spent)*100)/100;
+  D={settings, teams, visits, subs, selfies, spends, kitty, unlocked, found, positions, board:R.board,
      challenges:R.challenges, pubinfo:R.pubinfo, secret:R.secret, members:R.members,
      interval:Math.max(1,parseInt(settings.interval)||2)};
 }
@@ -189,6 +194,7 @@ function SupabaseBackend(client){
         settings:client.from("settings").select("data").eq("id",1).maybeSingle(),
         teams:client.from("teams").select("*"),
         pubinfo:client.from("pub_info").select("*"),
+        spends:client.from("spends").select("*"),
       };
       if(signedIn){
         Object.assign(jobs,{
@@ -206,7 +212,7 @@ function SupabaseBackend(client){
       }
       const keys=Object.keys(jobs), res=await Promise.all(keys.map(k=>jobs[k]));
       const out={}; keys.forEach((k,i)=>{
-        if(res[i].error){ if(k==="selfies"){ console.warn("Selfies unavailable. Re-run schema.sql.",res[i].error); out[k]=[]; return; } throw res[i].error; }
+        if(res[i].error){ if(k==="selfies"||k==="spends"){ console.warn(k+" unavailable. Re-run schema.sql.",res[i].error); out[k]=[]; return; } throw res[i].error; }
         out[k]=res[i].data; });
       R.settings=(out.settings&&out.settings.data)||{};
       R.teams=out.teams||[];
@@ -214,7 +220,7 @@ function SupabaseBackend(client){
       R.rosters={}; (out.rosters||[]).forEach(r=>R.rosters[r.team_id]=r.names||[]);
       R.members=out.members||[];
       const mine=R.members.find(m=>m.user_id===S.me.userId); R.myTeam=mine?mine.team_id:null;
-      R.visits=out.visits||[]; R.subs=out.subs||[]; R.selfies=out.selfies||[]; R.unlocked=out.unlocked||[]; R.found=out.found||[];
+      R.visits=out.visits||[]; R.subs=out.subs||[]; R.selfies=out.selfies||[]; R.spends=out.spends||[]; R.unlocked=out.unlocked||[]; R.found=out.found||[];
       R.positions=out.positions||[]; R.board=out.board||[];
       R.challenges={}; (out.challenges||[]).forEach(c=>R.challenges[c.pub_id]={title:c.title||"",text:c.body||""});
       R.secret=out.secret?{hideout:out.secret.hideout,clues:out.secret.clues||[]}:{hideout:null,clues:[]};
@@ -244,6 +250,8 @@ function SupabaseBackend(client){
       await q(client.from("selfies").upsert({team_id:team,pub_id:pub,path,at:new Date().toISOString()}));
       if(old&&old!==path) await client.storage.from("selfies").remove([old]);   // tidy up the replaced photo; a failure here is harmless
     },
+    addSpend:(amount,note)=>q(client.from("spends").insert({amount,note:note||null})),
+    delSpend:id=>q(client.from("spends").delete().eq("id",id)),
     async deleteSelfie(team,pub,path){
       await q(client.from("selfies").delete().eq("team_id",team).eq("pub_id",pub));
       if(path) await client.storage.from("selfies").remove([path]);
@@ -273,7 +281,7 @@ function SupabaseBackend(client){
 
 function LocalBackend(){
   const K="demo";
-  const db=Object.assign({settings:{}, teams:null, rosters:{}, members:[], pubinfo:{}, challenges:{}, secret:{hideout:null,clues:[]}, visits:[], subs:[], selfies:[], unlocked:[], found:[], myTeam:null}, ls.get(K)||{});
+  const db=Object.assign({settings:{}, teams:null, rosters:{}, members:[], pubinfo:{}, challenges:{}, secret:{hideout:null,clues:[]}, visits:[], subs:[], selfies:[], spends:[], unlocked:[], found:[], myTeam:null}, ls.get(K)||{});
   if(!db.teams){ db.teams=DEFAULT_TEAMS.map((t,i)=>({id:t.id,num:t.num,name:t.name,color:t.color,is_chicken:!!t.chicken,sort:i})); DEFAULT_TEAMS.forEach(t=>db.rosters[t.id]=t.members.slice()); }
   const save=()=>ls.set(K,db), now=()=>new Date().toISOString();
   const nextN=t=>db.unlocked.filter(u=>u.team_id===t).reduce((m,u)=>Math.max(m,u.n),0)+1;
@@ -281,7 +289,7 @@ function LocalBackend(){
   return {
     async load(){
       R.settings=db.settings; R.teams=db.teams; R.rosters=db.rosters; R.members=db.members; R.pubinfo=db.pubinfo; R.challenges=db.challenges;
-      R.secret=db.secret; R.visits=db.visits; R.subs=db.subs; R.selfies=db.selfies; R.unlocked=db.unlocked; R.found=db.found; R.myTeam=db.myTeam; R.admins=[];
+      R.secret=db.secret; R.visits=db.visits; R.subs=db.subs; R.selfies=db.selfies; R.spends=db.spends; R.unlocked=db.unlocked; R.found=db.found; R.myTeam=db.myTeam; R.admins=[];
       const pos={}; db.visits.forEach(v=>{ if(!pos[v.team_id]||ms(v.at)>ms(pos[v.team_id].at)) pos[v.team_id]=v; });
       R.positions=Object.values(pos);
       R.board=db.teams.filter(t=>!t.is_chicken).map(t=>({team_id:t.id,pubs:db.visits.filter(v=>v.team_id===t.id).length,clues:db.unlocked.filter(u=>u.team_id===t.id).length,found_at:(db.found.find(f=>f.team_id===t.id)||{}).at||null}));
@@ -299,6 +307,8 @@ function LocalBackend(){
     async uploadSelfie(team,pub,blob){ return "demo:"+await shrinkToDataUrl(blob,480); },
     async saveSelfie(team,pub,path){ if((db.settings.state||"setup")!=="live") throw new Error("row-level security");
       db.selfies=db.selfies.filter(x=>!(x.team_id===team&&x.pub_id===pub)); db.selfies.push({team_id:team,pub_id:pub,path:"demo",data:path.slice(5),at:now()}); save(); },
+    async addSpend(amount,note){ db.spends.push({id:uid(),amount,note:note||null,at:now()}); save(); },
+    async delSpend(id){ db.spends=db.spends.filter(x=>x.id!==id); save(); },
     async deleteSelfie(team,pub){ db.selfies=db.selfies.filter(x=>!(x.team_id===team&&x.pub_id===pub)); save(); },
     async approve(id,auto){ const s=db.subs.find(x=>x.id===id); if(!s||s.status==="approved") return; const n=nextN(s.team_id);
       db.unlocked.push({team_id:s.team_id,n,body:clueText(n,auto),pub_id:s.pub_id,at:now()}); Object.assign(s,{status:"approved",clue_no:n,reviewed_at:now(),review_note:null}); save(); return n; },
@@ -380,6 +390,7 @@ function joinScreen(){
       <div class="field"><label for="joinname">Your name (optional)</label><input type="text" id="joinname" placeholder="So the chicken knows who sent what" autocomplete="given-name"></div>
       <button class="btn primary block" data-action="dojoin">Join team</button>
       <p class="sm muted">Not sure of your number? Ask ${esc(CONFIG.hosts)}.</p></div>
+    ${kittyCard()}
     <div class="banner yolk">Meet at <b>${esc(CONFIG.meetPub)}</b>, ${esc(CONFIG.meetAddr)}${D.settings.start?` at <b>${esc(D.settings.start)}</b>`:""}. ${esc(CONFIG.hosts)} are buying the first round.</div>
     <div class="card"><div class="row"><div style="min-width:0"><h3>Running the game?</h3><p class="sm muted">Organisers sign in with email and password.</p></div><span class="spacer"></span><button class="btn" data-action="signin">Organiser sign-in</button></div></div>`;
 }
@@ -387,6 +398,7 @@ function organiserHome(){
   return `<div><h1>Hello, chicken</h1><p class="muted">You're signed in as an organiser. Run the game from Chicken HQ, or preview what a team sees.</p></div>
     ${stateBanner()}
     <div class="card"><div class="row"><a class="btn primary" href="#admin">${ICON.admin} Open Chicken HQ${pending().length?` <span class="cnt">${pending().length}</span>`:""}</a><button class="btn" data-action="viewas">Preview a team</button></div></div>
+    ${kittyCard()}
     <div class="card"><h2>Team numbers</h2><p class="sm muted">Players type these to join.</p>${hunters().map(t=>`<div class="trow"><span class="num" style="font-family:var(--display);font-weight:800;font-size:22px;width:32px">${t.num??"–"}</span><div style="min-width:0"><b>${esc(t.name)}</b><div class="sm muted">${(D.members.filter(m=>m.team_id===t.id).length)} joined</div></div><span class="dot" style="background:${t.color};width:14px;height:14px"></span></div>`).join("")}</div>`;
 }
 function viewPlay(){
@@ -405,6 +417,7 @@ function viewPlay(){
     <div class="who">${t.members.map(esc).join(" · ")}</div>
     <div class="stats"><div class="stat"><b class="num">${n}</b><span>Pubs</span></div><div class="stat"><b class="num">${clues.length}</b><span>Clues</span></div><div class="stat"><b class="num">${found?"—":toNext}</b><span>${found?"Hiding now":"To next challenge"}</span></div></div>
   </div>`;
+  h+=kittyCard();
   if(found){
     h+=`<div class="card"><h2>You found them. Now you're the chicken too.</h2><p class="muted">Stay put, keep it quiet, and enjoy watching the others search.</p></div>`;
   } else {
@@ -460,6 +473,35 @@ async function uploadSelfie(tid,pub,file){
 }
 function shrinkToDataUrl(blob,max){ return createImageBitmap(blob).then(bmp=>{const s=Math.min(1,max/Math.max(bmp.width,bmp.height));
   const c=document.createElement("canvas"); c.width=Math.round(bmp.width*s); c.height=Math.round(bmp.height*s); c.getContext("2d").drawImage(bmp,0,0,c.width,c.height); return c.toDataURL("image/jpeg",.72);}); }
+
+/* =================== KITTY =================== */
+/* everyone sees what's left; organisers knock off each round they buy */
+function kittyCard(){
+  const k=D.kitty, admin=isAdmin()&&!S.viewAs;
+  if(!k.total&&!D.spends.length) return admin?`<div class="card"><div class="row"><div style="min-width:0"><h3>${ICON.kitty.replace("<svg",'<svg width="18" height="18" style="vertical-align:-3px"')} Kitty</h3><p class="sm muted">Set the total in Chicken HQ → Kitty and everyone sees it count down.</p></div><span class="spacer"></span><button class="btn sm" data-action="gokitty">Set it up</button></div></div>`:"";
+  const pct=k.total?Math.max(0,Math.min(100,k.left/k.total*100)):0, lvl=k.left<0||pct<10?"low":pct<25?"mid":"ok", last=D.spends[0];
+  return `<div class="card kitty ${lvl}"><div class="row"><span class="lbl">${ICON.kitty.replace("<svg",'<svg width="14" height="14" style="vertical-align:-2px"')} Kitty</span><span class="spacer"></span>${admin?`<button class="btn sm yolk" data-action="spend">Bought a round</button>`:""}</div>
+    <div class="kbig"><b class="num">${money(Math.abs(k.left))}</b><span>${k.left<0?"over budget":"left"}</span></div>
+    <div class="kbar" role="meter" aria-valuemin="0" aria-valuemax="${k.total}" aria-valuenow="${Math.max(0,k.left)}" aria-label="Kitty left"><i style="width:${pct}%"></i></div>
+    <div class="sm muted">${money(k.spent)} spent of ${money(k.total)}${D.spends.length?` · ${D.spends.length} ${D.spends.length===1?"round":"rounds"}`:""}${last?` · last ${money(last.amount)} ${agoSpan(last.at)}`:""}</div></div>`;
+}
+function spendSheet(){
+  return `<div class="row"><h2>Bought a round</h2><span class="spacer"></span><button class="btn sm ghost" data-action="closesheet">Close</button></div>
+    <p class="sm muted">${money(D.kitty.left)} left in the kitty.</p>
+    <div class="field"><label for="spend-amt">How much? (£)</label><input type="text" id="spend-amt" inputmode="decimal" placeholder="e.g. 42.50" autocomplete="off" autofocus style="font-size:28px;font-weight:700;text-align:center"></div>
+    <div class="field"><label for="spend-note">What for? (optional)</label><input type="text" id="spend-note" placeholder="e.g. Round for the found teams"></div>
+    <p class="sm muted">Everyone can see the amount and note, so don't name the pub you're hiding in.</p>
+    <button class="btn primary block" data-action="dospend">Take it off the kitty</button>`;
+}
+function adminKitty(){
+  const k=D.kitty;
+  return `${kittyCard()}
+    <div class="card"><h2>Kitty total</h2><p class="sm muted">Usually the buy-in (${esc(D.settings.buyIn||"£15")}) times the number of players. Everyone can see the total and what's left.</p>
+      <div class="row"><input type="text" id="kitty-total" inputmode="decimal" value="${k.total||""}" placeholder="e.g. 240" aria-label="Kitty total in pounds" style="flex:1;min-width:120px"><button class="btn primary" data-action="savekitty">Save total</button></div></div>
+    <div class="card"><div class="row"><h2>Rounds bought</h2><span class="spacer"></span><button class="btn sm yolk" data-action="spend">Add a round</button></div>
+      ${D.spends.length?D.spends.map(x=>`<div class="trow"><b class="num">${money(x.amount)}</b><div style="min-width:0"><span>${esc(x.note||"Round")}</span><div class="sm muted">${hhmm(x.at)} · ${agoSpan(x.at)}</div></div><button class="btn sm ghost danger" data-action="delspend" data-id="${esc(x.id)}">Remove</button></div>`).join(""):'<p class="sm muted">Nothing spent yet.</p>'}</div>`;
+}
+const parseMoney=v=>{const n=parseFloat(String(v||"").replace(/[£,\s]/g,"")); return isFinite(n)?Math.round(n*100)/100:NaN;};
 
 /* =================== GALLERY =================== */
 function galleryTile(sf){
@@ -670,14 +712,14 @@ function signinSheet(){
 }
 
 /* =================== ADMIN =================== */
-const ATABS=[["activity","Activity"],["review","Review"],["game","Game"],["teams","Teams & players"],["clues","Hideout & clues"],["challenges","Pubs & challenges"],["rules","Rules"]];
+const ATABS=[["activity","Activity"],["review","Review"],["kitty","Kitty"],["game","Game"],["teams","Teams & players"],["clues","Hideout & clues"],["challenges","Pubs & challenges"],["rules","Rules"]];
 function viewAdmin(){
   const pc=pending().length;
   const uc=unseenCount();
   let h=`<div><h1>Chicken HQ</h1><p class="muted">Organisers only. You can see every team, approve evidence and set up the game.</p></div>
     ${S.mode==="local"?'<div class="banner yolk">Demo mode: everything saves on this device only. Add your Supabase details to config.js to run the real game.</div>':`<div class="row sm"><span class="muted">Signed in as ${esc(S.me.email||"")}</span><span class="spacer"></span><button class="btn sm" data-action="signout">Sign out</button></div>`}
     <div class="segs" role="group" aria-label="Chicken HQ sections">${ATABS.map(([k,l])=>`<button type="button" data-action="atab" data-k="${k}" aria-pressed="${S.adminTab===k}">${l}${k==="review"&&pc?` <span class="cnt">${pc}</span>`:k==="activity"&&uc?` <span class="cnt">${uc}</span>`:""}</button>`).join("")}</div>`;
-  h+=({activity:adminActivity,review:adminReview,game:adminGame,teams:adminTeams,clues:adminClues,challenges:adminChallenges,rules:adminRules})[S.adminTab]();
+  h+=({activity:adminActivity,review:adminReview,kitty:adminKitty,game:adminGame,teams:adminTeams,clues:adminClues,challenges:adminChallenges,rules:adminRules})[S.adminTab]();
   return h;
 }
 function mediaHtml(s){return (s.media||[]).map(m=>{const u=signedUrl(m); if(!u) return `<div class="media-ph">${m.demo?"Demo photo":"Loading…"}</div>`;
@@ -869,6 +911,16 @@ document.addEventListener("click",async e=>{
       await act(async()=>{ if(sf) await api.deleteSelfie(tid,pub,sf.path); await api.undoVisit(tid,pub); },"Check-in removed.").catch(()=>{}); break; }
     case "viewselfie": openSheet(selfieViewSheet(a.dataset.team,a.dataset.pub)); break;
     case "galby": S.galBy=a.dataset.k; renderView("gallery"); break;
+    case "gokitty": S.adminTab="kitty"; location.hash="admin"; renderAll(); break;
+    case "spend": openSheet(spendSheet()); break;
+    case "dospend": { const amt=parseMoney(document.getElementById("spend-amt").value), note=document.getElementById("spend-note").value.trim();
+      if(!(amt>0)||amt>=10000){ toast("Enter the amount, e.g. 42.50"); break; }
+      a.disabled=true; closeSheet();
+      await act(()=>api.addSpend(amt,note),()=>`${money(amt)} off the kitty. ${money(Math.round((D.kitty.left-amt)*100)/100)} left.`).catch(()=>{}); break; }
+    case "delspend": await act(()=>api.delSpend(a.dataset.id),"Round removed. Back in the kitty.").catch(()=>{}); break;
+    case "savekitty": { const v=parseMoney(document.getElementById("kitty-total").value);
+      if(!(v>=0)){ toast("Enter the kitty total, e.g. 240"); break; }
+      await saveSettings({budget:v}).then(()=>toast(`Kitty set to ${money(v)}.`)).catch(()=>{}); break; }
     case "openchal": openSheet(`<div class="row"><span class="spacer"></span><button class="btn sm ghost" data-action="closesheet">Close</button></div>${challengeCard(myTeamId(),a.dataset.pub,+a.dataset.i)}`); break;
     case "submit": submitEvidence(a.dataset.team,a.dataset.pub,+a.dataset.i); break;
     case "fit": fitAll(); break;
@@ -937,6 +989,7 @@ document.addEventListener("input",e=>{
 });
 document.addEventListener("keydown",e=>{
   if(e.key==="Escape"&&document.querySelector(".scrim")) closeSheet();
+  if(e.key==="Enter"&&(e.target.id==="spend-amt"||e.target.id==="spend-note")){ e.preventDefault(); const b=document.querySelector('[data-action="dospend"]'); if(b) b.click(); }
   if(e.key==="Enter"&&(e.target.id==="joinnum"||e.target.id==="joinname")){ e.preventDefault(); const b=document.querySelector('[data-action="dojoin"]'); if(b) b.click(); }
 });
 document.addEventListener("change",async e=>{
@@ -1001,7 +1054,7 @@ let channel=null;
 function subscribe(){
   if(channel) sb.removeChannel(channel);
   channel=sb.channel("game-"+uid());
-  ["settings","teams","team_rosters","team_members","pub_info","challenges","secret","visits","submissions","selfies","unlocked","found"].forEach(t=>
+  ["settings","teams","team_rosters","team_members","pub_info","challenges","secret","visits","submissions","selfies","spends","unlocked","found"].forEach(t=>
     channel.on("postgres_changes",{event:"*",schema:"public",table:t},payload=>{ if(t==="visits"||t==="settings"||t==="challenges") S.chal={}; organiserAlert(t,payload); softRefresh(); }));
   channel.subscribe();
 }
