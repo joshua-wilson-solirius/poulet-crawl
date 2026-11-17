@@ -88,6 +88,16 @@ create table if not exists public.selfies (
   foreign key (team_id, pub_id) references public.visits(team_id, pub_id) on delete cascade
 );
 
+-- The kitty: organisers log each round they buy. The total is settings.data.budget. Everyone can see both.
+-- Deliberately no pub column, so the spend log can't give away where the chicken is hiding.
+create table if not exists public.spends (
+  id      uuid primary key default gen_random_uuid(),
+  amount  numeric(8,2) not null check (amount > 0 and amount < 10000),
+  note    text,
+  at      timestamptz not null default now(),
+  by_user uuid default auth.uid()
+);
+
 create table if not exists public.unlocked (
   team_id text not null references public.teams(id) on delete cascade,
   n       int not null,
@@ -269,7 +279,7 @@ end $$;
 -- Row-level security
 -- ---------------------------------------------------------------
 do $$ declare t text; begin
-  foreach t in array array['admins','settings','teams','team_rosters','team_members','pub_info','challenges','secret','visits','submissions','selfies','unlocked','found'] loop
+  foreach t in array array['admins','settings','teams','team_rosters','team_members','pub_info','challenges','secret','visits','submissions','selfies','spends','unlocked','found'] loop
     execute format('alter table public.%I enable row level security', t);
   end loop;
 end $$;
@@ -285,11 +295,13 @@ end $$;
 create policy settings_read  on public.settings for select to anon, authenticated using (true);
 create policy teams_read     on public.teams    for select to anon, authenticated using (true);
 create policy pub_info_read  on public.pub_info for select to anon, authenticated using (true);
+create policy spends_read    on public.spends   for select to anon, authenticated using (true);
 
 -- organisers write the shared setup
 create policy settings_admin   on public.settings     for update to authenticated using (public.is_admin()) with check (public.is_admin());
 create policy teams_admin      on public.teams        for all    to authenticated using (public.is_admin()) with check (public.is_admin());
 create policy pub_info_admin   on public.pub_info     for all    to authenticated using (public.is_admin()) with check (public.is_admin());
+create policy spends_admin     on public.spends       for all    to authenticated using (public.is_admin()) with check (public.is_admin());
 create policy challenges_admin on public.challenges   for all    to authenticated using (public.is_admin()) with check (public.is_admin());
 create policy secret_admin     on public.secret       for all    to authenticated using (public.is_admin()) with check (public.is_admin());
 create policy admins_admin     on public.admins       for all    to authenticated using (public.is_admin()) with check (public.is_admin());
@@ -333,7 +345,7 @@ create policy found_admin    on public.found for all to authenticated using (pub
 
 -- table privileges (row-level security above decides which rows)
 grant usage on schema public to anon, authenticated;
-grant select on public.settings, public.teams, public.pub_info to anon;
+grant select on public.settings, public.teams, public.pub_info, public.spends to anon;
 grant select, insert, update, delete on all tables in schema public to authenticated;
 revoke insert on public.team_members from authenticated;   -- joining only through join_team()
 grant execute on function public.is_admin(), public.my_team(), public.setting(text), public.can_see_selfies(text), public.join_team(int, text),
@@ -345,7 +357,7 @@ grant execute on function public.is_admin(), public.my_team(), public.setting(te
 -- Live updates (row-level security still applies to what each phone receives)
 -- ---------------------------------------------------------------
 do $$ declare t text; begin
-  foreach t in array array['settings','teams','team_rosters','team_members','pub_info','challenges','secret','visits','submissions','selfies','unlocked','found'] loop
+  foreach t in array array['settings','teams','team_rosters','team_members','pub_info','challenges','secret','visits','submissions','selfies','spends','unlocked','found'] loop
     begin execute format('alter publication supabase_realtime add table public.%I', t);
     exception when duplicate_object then null; end;
   end loop;

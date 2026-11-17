@@ -101,6 +101,10 @@ do $$ begin assert (select count(*) from public.team_members) = 1, 'only own tea
 do $$ begin assert (select count(*) from public.team_positions()) = 0, 'other team positions hidden while showOthers is off'; end $$;
 do $$ begin assert (select count(*) from public.leaderboard()) = 1, 'leaderboard shows own team only while hidden'; end $$;
 do $$ begin assert public.get_challenge('p2') is null, 'cannot read another team''s challenge pub'; end $$;
+do $$ begin
+  begin insert into public.spends (amount, note) values (5, 'fake round'); raise exception 'FAIL: player logged a kitty spend';
+  exception when insufficient_privilege then null; end;
+end $$;
 do $$ begin assert (select count(*) from public.selfies) = 0, 'other team selfies hidden during the game'; end $$;
 do $$ begin assert not public.can_see_selfies((select id from public.teams where num = 1)), 'other team selfie files hidden during the game'; end $$;
 delete from public.selfies;                                  -- silently affects 0 rows under RLS
@@ -119,6 +123,8 @@ do $$ begin assert (select count(*) from public.secret) = 1, 'organiser reads se
 do $$ begin assert (select count(*) from public.visits) = 2, 'organiser sees all visits'; end $$;
 do $$ begin assert (select count(*) from public.selfies) = 2, 'organiser sees every selfie, and other teams could not delete them'; end $$;
 do $$ begin assert (select count(*) from public.team_positions()) = 1, 'organiser sees every team position'; end $$;
+insert into public.spends (amount, note) values (42.50, 'Round 1');
+do $$ begin assert (select count(*) from public.spends) = 1, 'organiser logs a kitty spend'; end $$;
 do $$ begin assert public.approve_submission((select id from public.submissions limit 1), 'auto text') = 1, 'approve unlocks clue 1'; end $$;
 do $$ begin assert (select body from public.unlocked where n = 1) = 'first clue', 'clue 1 comes from the clue list'; end $$;
 do $$ begin assert public.unlock_clue((select id from public.teams where num = 1), 'auto two') = 2, 'manual unlock gives clue 2'; end $$;
@@ -130,6 +136,10 @@ select pg_temp.as_admin_db();
 select pg_temp.act_as('00000000-0000-0000-0000-0000000000b2');
 do $$ begin assert (select count(*) from public.team_positions()) = 0, 'other team positions stay hidden even with the old showOthers switch on'; end $$;
 do $$ begin assert (select count(*) from public.unlocked) = 0, 'other team clues still hidden'; end $$;
+do $$ begin assert (select sum(amount) from public.spends) = 42.50, 'players see the kitty spends'; end $$;
+update public.spends set amount = 1;                         -- silently affects 0 rows under RLS
+delete from public.spends;
+do $$ begin assert (select sum(amount) from public.spends) = 42.50, 'players cannot change or delete kitty spends'; end $$;
 
 -- ---------- game not live: no check-ins ----------
 select pg_temp.as_admin_db();
@@ -170,6 +180,7 @@ do $$ begin assert (select count(*) from public.selfies) = 0, 'account with no t
 select pg_temp.as_admin_db();
 set local role anon;
 do $$ begin assert (select count(*) from public.teams) > 0, 'visitor sees team names'; end $$;
+do $$ begin assert (select count(*) from public.spends) = 1, 'visitor sees the kitty'; end $$;
 do $$ begin
   begin perform count(*) from public.visits; raise exception 'FAIL: visitor read visits';
   exception when insufficient_privilege then null; end;
