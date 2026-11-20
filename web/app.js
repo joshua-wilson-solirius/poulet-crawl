@@ -178,7 +178,6 @@ const joinRequests=()=>D.members.filter(m=>m.approved===false);
 const hqCount=()=>pending().length+joinRequests().length+unseenCount();
 const live=()=>D.settings.state==="live";
 const boardOpen=()=>isAdmin()||D.settings.showBoard===true||D.settings.state==="finished";
-const ordinal=i=>["1st","2nd","3rd","4th","5th","6th","7th","8th"][i]||(i+1)+"th";
 
 function autoClue(n, fromPub){
   const H=pubById(D.secret.hideout); if(!H) return "The chicken hasn't picked a hideout yet. Ask them for a hint in person.";
@@ -708,9 +707,9 @@ function viewTeams(){
   const list=open?ranked:hunters();
   const card=(t,i)=>{const st=stats[t.id], f=fo.indexOf(t.id), seeDetail=open||t.id===mine;
     return `<article class="teamcard"><div class="top"><span class="sw" style="background:${t.color}">${open?i+1:t.num??""}</span><div style="min-width:0"><h3>${esc(t.name)}${t.id===mine?' <span class="pill">You</span>':""}</h3><span class="sm muted">Team ${t.num??""}</span></div><span class="spacer"></span>
-      ${f>=0&&seeDetail?`<span class="pill good">Found ${ordinal(f)}</span>`:seeDetail?'<span class="pill">Hunting</span>':`<span class="pill">${icon("lock",12)} Hidden</span>`}</div>
+      ${f>=0&&seeDetail?'<span class="pill good">Found</span>':seeDetail?'<span class="pill">Hunting</span>':`<span class="pill">${icon("lock",12)} Hidden</span>`}</div>
       <div class="body">${t.members.length?`<div class="members">${t.members.map(m=>`<span>${esc(m)}</span>`).join("")}</div>`:""}
-      ${seeDetail&&st?`<div class="kpis"><div><b class="num">${st.pubs}</b><span>Pubs</span></div><div><b class="num">${st.clues}</b><span>Clues</span></div><div><b class="num">${f>=0?ordinal(f):"–"}</b><span>Found</span></div></div>`:""}
+      ${seeDetail&&st?`<div class="kpis"><div><b class="num">${st.pubs}</b><span>Pubs</span></div><div><b class="num">${st.clues}</b><span>Clues</span></div></div>`:""}
       </div></article>`;};
   return `<div><h1>Teams</h1><p class="muted">${open?"Ranked by who found the chicken first, then by clues unlocked.":"Scores stay secret until the end of the game. You can see your own team's progress."}</p></div>
     ${chickenCard(fo.length,open)}
