@@ -9,9 +9,10 @@ insert into auth.users (id, email, email_confirmed_at, is_anonymous, aud, role) 
   ('00000000-0000-0000-0000-0000000000a1', 'test-organiser@poulet.test', now(), false, 'authenticated', 'authenticated'),
   ('00000000-0000-0000-0000-0000000000b1', null, null, true, 'authenticated', 'authenticated'),   -- player on team 1
   ('00000000-0000-0000-0000-0000000000b2', null, null, true, 'authenticated', 'authenticated'),   -- player on team 2
-  ('00000000-0000-0000-0000-0000000000c1', 'imposter@poulet.test', null, false, 'authenticated', 'authenticated'); -- unconfirmed
+  ('00000000-0000-0000-0000-0000000000c1', 'imposter@poulet.test', null, false, 'authenticated', 'authenticated'), -- unconfirmed
+  ('00000000-0000-0000-0000-0000000000d1', null, null, true, 'authenticated', 'authenticated');   -- turns up after the game is live
 insert into public.admins (email) values ('test-organiser@poulet.test'), ('imposter@poulet.test');
-update public.settings set data = data || '{"state":"live","showOthers":false,"showBoard":false,"interval":2}' where id = 1;
+update public.settings set data = data || '{"state":"setup","showOthers":false,"showBoard":false,"interval":2}' where id = 1;
 update public.secret set hideout = 'p_hide', clues = array['first clue', '', 'third clue'] where id = 1;
 insert into public.challenges (pub_id, title, body) values ('p2', 'Secret task', 'Do the thing') on conflict (pub_id) do update set title = excluded.title, body = excluded.body;
 
@@ -23,9 +24,13 @@ begin
 end $$;
 create function pg_temp.as_admin_db() returns void language plpgsql as $$ begin execute 'reset role'; end $$;
 
--- ---------- player 1 joins team 1, player 2 joins team 2 ----------
+-- ---------- before the game: player 1 joins team 1, player 2 joins team 2 ----------
+select pg_temp.act_as('00000000-0000-0000-0000-0000000000b2');
+do $$ begin assert public.join_team(2) is not null, 'player 2 joins team 2'; end $$;
+select pg_temp.as_admin_db();
 select pg_temp.act_as('00000000-0000-0000-0000-0000000000b1');
 do $$ begin assert public.join_team(1, 'Pat') = (select id from public.teams where num = 1), 'player 1 joins team 1'; end $$;
+do $$ begin assert public.my_team() = (select id from public.teams where num = 1), 'joining before the game is approved straight away'; end $$;
 do $$ begin
   begin perform public.join_team(2); raise exception 'FAIL: player switched team on their own';
   exception when others then if sqlerrm like 'FAIL%' then raise; end if; end;
@@ -36,6 +41,15 @@ do $$ begin
   exception when insufficient_privilege then null; end;
 end $$;
 do $$ begin assert not public.is_admin(), 'anonymous player is not an organiser'; end $$;
+
+-- the game goes live
+select pg_temp.as_admin_db();
+update public.settings set data = data || '{"state":"live"}' where id = 1;
+select pg_temp.act_as('00000000-0000-0000-0000-0000000000b1');
+do $$ begin
+  begin perform public.join_team(2); raise exception 'FAIL: player switched team during the game';
+  exception when others then if sqlerrm like 'FAIL%' then raise; end if; end;
+end $$;
 
 -- player 1 checks in twice; second pub is a challenge stop
 insert into public.visits (team_id, pub_id, at) values (public.my_team(), 'p1', now() - interval '1 hour'), (public.my_team(), 'p2', now());
@@ -93,7 +107,7 @@ end $$;
 -- ---------- player 2 sees nothing of team 1 ----------
 select pg_temp.as_admin_db();
 select pg_temp.act_as('00000000-0000-0000-0000-0000000000b2');
-do $$ begin assert public.join_team(2) is not null, 'player 2 joins team 2'; end $$;
+do $$ begin assert public.my_team() = (select id from public.teams where num = 2), 'player 2 is on team 2'; end $$;
 do $$ begin assert (select count(*) from public.visits) = 0, 'other team visits hidden'; end $$;
 do $$ begin assert (select count(*) from public.submissions) = 0, 'other team evidence hidden'; end $$;
 do $$ begin assert (select count(*) from public.team_rosters) = 1, 'only own roster visible'; end $$;
@@ -130,6 +144,34 @@ do $$ begin assert (select body from public.unlocked where n = 1) = 'first clue'
 do $$ begin assert public.unlock_clue((select id from public.teams where num = 1), 'auto two') = 2, 'manual unlock gives clue 2'; end $$;
 do $$ begin assert (select body from public.unlocked where n = 2) = 'auto two', 'blank clue 2 falls back to auto text'; end $$;
 update public.settings set data = data || '{"showOthers":true}' where id = 1;
+
+-- ---------- teams are locked once the game is live ----------
+select pg_temp.as_admin_db();
+select pg_temp.act_as('00000000-0000-0000-0000-0000000000d1');
+do $$ begin assert public.join_team(1, 'Late') = (select id from public.teams where num = 1), 'late phone can ask to join team 1'; end $$;
+do $$ begin assert public.my_team() is null, 'a join request during the game gives no team access'; end $$;
+do $$ begin assert (select approved from public.team_members where user_id = auth.uid()) = false, 'late join is waiting for approval'; end $$;
+do $$ begin assert (select count(*) from public.visits) = 0, 'waiting phone sees no check-ins'; end $$;
+do $$ begin assert (select count(*) from public.unlocked) = 0, 'waiting phone sees no clues'; end $$;
+do $$ begin
+  begin insert into public.visits (team_id, pub_id) values ((select id from public.teams where num = 1), 'p8');
+        raise exception 'FAIL: waiting phone checked in';
+  exception when insufficient_privilege then null; end;
+end $$;
+do $$ begin
+  begin perform public.join_team(2); raise exception 'FAIL: waiting phone switched its request to another team';
+  exception when others then if sqlerrm like 'FAIL%' then raise; end if; end;
+end $$;
+update public.team_members set approved = true where user_id = auth.uid();   -- silently affects 0 rows under RLS
+do $$ begin assert public.my_team() is null, 'waiting phone cannot approve itself'; end $$;
+select pg_temp.as_admin_db();
+select pg_temp.act_as('00000000-0000-0000-0000-0000000000a1');
+update public.team_members set approved = true where user_id = '00000000-0000-0000-0000-0000000000d1';
+select pg_temp.as_admin_db();
+select pg_temp.act_as('00000000-0000-0000-0000-0000000000d1');
+do $$ begin assert public.my_team() = (select id from public.teams where num = 1), 'organiser approval lets the late phone in'; end $$;
+select pg_temp.as_admin_db();
+select pg_temp.act_as('00000000-0000-0000-0000-0000000000a1');
 
 -- ---------- visibility switch ----------
 select pg_temp.as_admin_db();
