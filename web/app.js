@@ -685,14 +685,25 @@ function viewTeams(){
     return (sb_.clues||0)-(sa.clues||0) || (sb_.pubs||0)-(sa.pubs||0) || (a.num||0)-(b.num||0);});
   const list=open?ranked:hunters();
   const card=(t,i)=>{const st=stats[t.id], f=fo.indexOf(t.id), seeDetail=open||t.id===mine;
-    return `<article class="teamcard"><div class="top"><span class="sw" style="background:${t.color}">${t.chicken?"P":open?i+1:t.num??""}</span><div style="min-width:0"><h3>${esc(t.name)}${t.id===mine?' <span class="pill">You</span>':""}</h3><span class="sm muted">${t.chicken?"The chicken":`Team ${t.num??""}`}</span></div><span class="spacer"></span>
-      ${t.chicken?'<span class="pill">Hiding</span>':f>=0&&seeDetail?`<span class="pill good">Found ${ordinal(f)}</span>`:seeDetail?'<span class="pill">Hunting</span>':`<span class="pill">${icon("lock",12)} Hidden</span>`}</div>
+    return `<article class="teamcard"><div class="top"><span class="sw" style="background:${t.color}">${open?i+1:t.num??""}</span><div style="min-width:0"><h3>${esc(t.name)}${t.id===mine?' <span class="pill">You</span>':""}</h3><span class="sm muted">Team ${t.num??""}</span></div><span class="spacer"></span>
+      ${f>=0&&seeDetail?`<span class="pill good">Found ${ordinal(f)}</span>`:seeDetail?'<span class="pill">Hunting</span>':`<span class="pill">${icon("lock",12)} Hidden</span>`}</div>
       <div class="body">${t.members.length?`<div class="members">${t.members.map(m=>`<span>${esc(m)}</span>`).join("")}</div>`:""}
-      ${t.chicken?"":seeDetail&&st?`<div class="kpis"><div><b class="num">${st.pubs}</b><span>Pubs</span></div><div><b class="num">${st.clues}</b><span>Clues</span></div><div><b class="num">${f>=0?ordinal(f):"–"}</b><span>Found</span></div></div>`:""}
+      ${seeDetail&&st?`<div class="kpis"><div><b class="num">${st.pubs}</b><span>Pubs</span></div><div><b class="num">${st.clues}</b><span>Clues</span></div><div><b class="num">${f>=0?ordinal(f):"–"}</b><span>Found</span></div></div>`:""}
       </div></article>`;};
   return `<div><h1>Teams</h1><p class="muted">${open?"Ranked by who found the chicken first, then by clues unlocked.":"Scores stay secret until the end of the game. You can see your own team's progress."}</p></div>
-    <div class="grid2">${card(chicken(),0)}${list.map(card).join("")}</div>
+    ${chickenCard(fo.length,open)}
+    <div class="lbl">Hunting teams</div>
+    <div class="grid2">${list.map(card).join("")}</div>
     ${galleryOpen()?gallerySection():""}`;
+}
+
+/* the chicken isn't competing, so it sits above the teams rather than among them */
+function chickenCard(foundN,open){
+  const c=chicken(), all=hunters().length;
+  const status=open&&foundN?(foundN===all?"Everyone found them":`Found by ${foundN} of ${all}`):"Hiding";
+  return `<section class="card chickencard"><div class="row"><span class="csw" style="background:${c.color}">P</span>
+    <div style="min-width:0"><span class="lbl">The chicken</span><h3>${esc(c.name)}</h3>${c.members.length?`<span class="sm muted">${c.members.map(esc).join(" · ")}</span>`:""}</div>
+    <span class="spacer"></span><span class="pill">${status}</span></div></section>`;
 }
 
 /* =================== RULES =================== */
