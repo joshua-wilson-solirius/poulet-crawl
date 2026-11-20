@@ -5,7 +5,7 @@ a challenge every 2nd pub, photo/video evidence, and clues the organisers unlock
 
 - `web/` is the app. It's static files deployed to GitHub Pages, and anyone can open it in a phone browser and add it to their home screen.
 - `supabase/schema.sql` sets up the shared database, security rules and evidence storage.
-- `src/` is the original claude.ai artifact version, plus the OpenStreetMap extraction scripts.
+- `src/` holds the OpenStreetMap extraction scripts that produced the pub data in `web/data.js`.
 
 ## One-time setup
 
