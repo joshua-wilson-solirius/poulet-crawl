@@ -1,6 +1,6 @@
 # Où est le Poulet? Balham
 
-Phone web app for Dom's birthday pub crawl: a map of every pub within 1 mile of Balham station, team check-ins,
+Phone web app for Dom and Josh's birthday pub crawl: a map of every pub within 1 mile of Balham station, team check-ins,
 a challenge every 2nd pub, photo/video evidence, and clues the organisers unlock from Chicken HQ.
 
 - `web/` is the app. It's static files deployed to GitHub Pages, and anyone can open it in a phone browser and add it to their home screen.
