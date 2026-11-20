@@ -385,6 +385,10 @@ function renderChrome(){
   pill.innerHTML=(t?`<span class="sw" style="background:${t.color}"></span>${esc(t.name)}${S.viewAs?" (preview)":""}`:organiserOnly()?"Organiser":"Join a team")+sync;
   NAV.forEach(([k])=>{document.getElementById("v-"+k).hidden=(k!==r);});
 }
+/* theme: follows the device unless this phone picks light or dark */
+function applyTheme(k){ if(k==="light"||k==="dark") document.documentElement.dataset.theme=k; else delete document.documentElement.dataset.theme; }
+const themePicker=()=>{const cur=ls.get("theme")||"auto";
+  return `<div class="row"><span class="lbl">Appearance</span><span class="spacer"></span><div class="segs" role="group" aria-label="Appearance">${[["auto","Auto"],["light","Light"],["dark","Dark"]].map(([k,l])=>`<button type="button" data-action="theme" data-k="${k}" aria-pressed="${cur===k}">${l}</button>`).join("")}</div></div>`;};
 /* one menu for who you are: join, preview, sign in or out */
 function accountSheet(){
   const t=teamById(myTeamId()), status=S.mode==="db"?(S.loaded?"Connected live.":"Connecting…"):"Demo mode: everything saves on this device only.";
@@ -392,11 +396,13 @@ function accountSheet(){
     <div class="lbl">Preview a team</div>
     <div class="teampick">${hunters().map(x=>`<button type="button" data-action="viewas" data-team="${x.id}" ${S.viewAs===x.id?'aria-pressed="true"':""}><span class="sw" style="background:${x.color}"></span><b>${esc(teamLabel(x))}</b></button>`).join("")}</div>
     ${S.viewAs?'<button class="btn block" data-action="stopview">Stop preview</button>':""}
+    ${themePicker()}
     <button class="btn block ghost danger" data-action="signout">Sign out</button>`;
   return `${sheetHead(t?esc(t.name):"Join a team")}<p class="sm muted">${t?`You're on ${esc(teamLabel(t))}. `:""}${status}</p>
     ${t?"":'<button class="btn primary block" data-action="jointeam">Join with your team number</button>'}
     ${S.me.email&&!S.me.isAdmin?`<div class="banner">${esc(S.me.email)} isn't on the organiser list.</div><button class="btn block" data-action="signout">Sign out</button>`
-      :sb?'<button class="btn block ghost" data-action="signin">Organiser sign-in</button>':""}`;
+      :sb?'<button class="btn block ghost" data-action="signin">Organiser sign-in</button>':""}
+    ${themePicker()}`;
 }
 
 /* =================== PLAY =================== */
@@ -906,6 +912,7 @@ document.addEventListener("click",async e=>{
   e.preventDefault();
   try{ switch(act_){
     case "menu": openSheet(accountSheet()); break;
+    case "theme": { const k=a.dataset.k; if(k==="auto") ls.del("theme"); else ls.set("theme",k); applyTheme(k); openSheet(accountSheet()); break; }
     case "jointeam": closeSheet(); location.hash="play"; renderAll(); setTimeout(()=>{const n=document.getElementById("joinnum"); if(n) n.focus();},50); break;
     case "dojoin": {
       const num=parseInt((document.getElementById("joinnum")||{}).value,10), name=((document.getElementById("joinname")||{}).value||"").trim();
