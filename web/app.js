@@ -34,7 +34,7 @@ const DEFAULT_HOUSE = [
   "No calling, texting or location-tracking the chicken.",
   "No asking bar staff \"have you seen a group of…\". That's cheating, and they're busy.",
   "Drink water between rounds and look after each other. Nobody gets left behind.",
-  "It's Dom's birthday. Dom's word is final on any dispute.",
+  "It's Dom and Josh's birthday. Their word is final on any dispute.",
 ];
 
 /* =================== map data (OpenStreetMap, ODbL) =================== */

@@ -1,7 +1,7 @@
 {
   "name": "Où est le Poulet? Balham",
   "short_name": "Poulet",
-  "description": "Dom's birthday pub crawl in Balham: check in, beat challenges, unlock clues and find the chicken.",
+  "description": "Dom and Josh's birthday pub crawl in Balham: check in, beat challenges, unlock clues and find the chicken.",
   "start_url": "./#play",
   "scope": "./",
   "display": "standalone",
