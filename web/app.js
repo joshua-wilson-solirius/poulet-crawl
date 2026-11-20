@@ -104,6 +104,10 @@ const ICON={
   kitty:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8h11l-1 12H7L6 8Z"/><path d="M17 10h1.5a2.5 2.5 0 0 1 0 5H16.6"/><path d="M8 4c0 1 1 1 1 2M12 3c0 1 1 1 1 2"/></svg>',
   walk:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="13" cy="4" r="2"/><path d="m9 21 2-6 3 3v3M7 12l3-4 4 1 3 3M11 15l-1-4"/></svg>',
 };
+const icon=(k,size,style)=>ICON[k].replace("<svg",`<svg width="${size}" height="${size}"${style?` style="${style}"`:""}`);
+const closeBtn='<button class="btn sm ghost" data-action="closesheet">Close</button>';
+const sheetHead=title=>`<div class="row">${title?`<h2>${title}</h2>`:""}<span class="spacer"></span>${closeBtn}</div>`;
+const fmtPrice=s=>/^\d/.test(s)?"£"+s:s;
 let toastT;
 function toast(msg,dur){const t=document.getElementById("toast");t.textContent=msg;t.hidden=false;clearTimeout(toastT);toastT=setTimeout(()=>t.hidden=true,dur||3400);}
 function openSheet(html){document.getElementById("sheetroot").innerHTML=`<div class="scrim" data-action="closesheet"><div class="sheet" role="dialog" aria-modal="true"><div class="grab"></div>${html}</div></div>`;
@@ -122,7 +126,7 @@ function errText(e){const m=(e&&(e.message||e.error_description||e.msg))||String
 /* =================== raw data (what this phone is allowed to see) =================== */
 const R = {settings:{}, teams:[], rosters:{}, members:[], pubinfo:{}, challenges:{}, secret:{hideout:null,clues:[]},
            visits:[], subs:[], selfies:[], spends:[], unlocked:[], found:[], positions:[], board:[], admins:[], myTeam:null};
-const S = {mode:"connecting", loaded:false, me:{email:null,isAdmin:false,userId:null}, adminTab:"activity", q:"", cq:"", selPub:null, draft:{},
+const S = {mode:"connecting", loaded:false, me:{email:null,isAdmin:false,userId:null}, adminTab:"live", q:"", cq:"", openPub:null, selPub:null, draft:{},
            chal:{}, viewAs:null, signed:{}, galBy:"team", actTeam:"", seenAt:ls.get("seenAct")||Date.now(), selfieBusy:null};
 
 /* =================== derived state =================== */
@@ -149,7 +153,12 @@ function derive(){
 const hunters=()=>D.teams.filter(t=>!t.chicken);
 const chicken=()=>D.teams.find(t=>t.chicken)||D.teams[0];
 const teamById=id=>D.teams.find(t=>t.id===id);
+const teamOr=id=>teamById(id)||{id,name:id,color:"#888",num:null,members:[]};
+const teamLabel=t=>t.chicken?t.name:`Team ${t.num??""} · ${t.name}`;
+const dot=(color,size)=>`<span class="dot" style="background:${color}${size?`;width:${size}px;height:${size}px`:""}"></span>`;
 const isAdmin=()=>S.mode==="local"||S.me.isAdmin;
+/* a signed-in organiser on the real game (in demo mode everyone is organiser and player at once) */
+const organiserOnly=()=>S.mode!=="local"&&S.me.isAdmin;
 const myTeamId=()=>{ if(isAdmin()&&S.viewAs) return S.viewAs; return R.myTeam&&teamById(R.myTeam)?R.myTeam:null; };
 const visitsOf=t=>D.visits[t]||[];
 const lastPubOf=t=>{const v=visitsOf(t); if(v.length) return pubById(v[v.length-1].pub); const p=D.positions[t]; return p?pubById(p.pub):null;};
@@ -361,104 +370,111 @@ function challengeFor(pubId){
 }
 
 /* =================== navigation =================== */
-const NAV=[["play","Play"],["map","Map"],["teams","Teams"],["gallery","Gallery"],["rules","Rules"],["admin","Chicken HQ"]];
-const navAllowed=k=>k==="admin"?isAdmin():k==="gallery"?galleryOpen():true;
-const route=()=>{const h=location.hash.slice(1);return NAV.some(n=>n[0]===h)&&navAllowed(h)?h:"play";};
+const NAV=[["play","Play"],["map","Map"],["teams","Teams"],["rules","Rules"],["admin","HQ"]];
+/* organisers don't play, so their Play tab only appears while they preview a team */
+const navAllowed=k=>k==="admin"?isAdmin():k==="play"?!(organiserOnly()&&!S.viewAs):true;
+const home=()=>navAllowed("play")?"play":"admin";
+const route=()=>{let h=location.hash.slice(1); if(h==="gallery") h="teams"; return NAV.some(n=>n[0]===h)&&navAllowed(h)?h:home();};
 function renderChrome(){
   const r=route(), items=NAV.filter(n=>navAllowed(n[0])), pc=isAdmin()?pending().length+unseenCount():0;
   const badge=k=>k==="admin"&&pc?`<span class="cnt">${pc}</span>`:"";
   document.getElementById("toptabs").innerHTML=items.map(([k,l])=>`<a href="#${k}" ${r===k?'aria-current="page"':""}>${l}${badge(k)}</a>`).join("");
-  document.getElementById("bottomnav").innerHTML=items.map(([k,l])=>`<a href="#${k}" ${r===k?'aria-current="page"':""}>${ICON[k]}<span>${k==="admin"?"HQ":l}</span>${badge(k)}</a>`).join("");
-  const t=teamById(myTeamId()), pill=document.getElementById("teampill");
-  pill.innerHTML=t?`<span class="sw" style="background:${t.color}"></span>${esc(t.name)}${S.viewAs?" (preview)":""}`:isAdmin()&&S.mode!=="local"?"Organiser":"Join a team";
-  pill.dataset.action=isAdmin()&&S.mode!=="local"?"viewas":"jointeam";
-  const s=document.getElementById("sync"); s.className="sync"+(S.mode==="db"&&S.loaded?" live":"");
-  s.title=S.mode==="db"?(S.loaded?"Live":"Connecting…"):"Demo mode: saved on this device only";
+  document.getElementById("bottomnav").innerHTML=items.map(([k,l])=>`<a href="#${k}" ${r===k?'aria-current="page"':""}>${ICON[k]}<span>${l}</span>${badge(k)}</a>`).join("");
+  const t=teamById(myTeamId()), pill=document.getElementById("teampill"), on=S.mode==="db"&&S.loaded;
+  const sync=`<span class="sync ${on?"live":""}" title="${S.mode==="db"?(on?"Live":"Connecting…"):"Demo mode"}"></span>`;
+  pill.innerHTML=(t?`<span class="sw" style="background:${t.color}"></span>${esc(t.name)}${S.viewAs?" (preview)":""}`:organiserOnly()?"Organiser":"Join a team")+sync;
   NAV.forEach(([k])=>{document.getElementById("v-"+k).hidden=(k!==r);});
+}
+/* one menu for who you are: join, preview, sign in or out */
+function accountSheet(){
+  const t=teamById(myTeamId()), status=S.mode==="db"?(S.loaded?"Connected live.":"Connecting…"):"Demo mode: everything saves on this device only.";
+  if(organiserOnly()) return `${sheetHead("Organiser")}<p class="sm muted">Signed in as ${esc(S.me.email||"")}. ${status}</p>
+    <div class="lbl">Preview a team</div>
+    <div class="teampick">${hunters().map(x=>`<button type="button" data-action="viewas" data-team="${x.id}" ${S.viewAs===x.id?'aria-pressed="true"':""}><span class="sw" style="background:${x.color}"></span><b>${esc(teamLabel(x))}</b></button>`).join("")}</div>
+    ${S.viewAs?'<button class="btn block" data-action="stopview">Stop preview</button>':""}
+    <button class="btn block ghost danger" data-action="signout">Sign out</button>`;
+  return `${sheetHead(t?esc(t.name):"Join a team")}<p class="sm muted">${t?`You're on ${esc(teamLabel(t))}. `:""}${status}</p>
+    ${t?"":'<button class="btn primary block" data-action="jointeam">Join with your team number</button>'}
+    ${S.me.email&&!S.me.isAdmin?`<div class="banner">${esc(S.me.email)} isn't on the organiser list.</div><button class="btn block" data-action="signout">Sign out</button>`
+      :sb?'<button class="btn block ghost" data-action="signin">Organiser sign-in</button>':""}`;
 }
 
 /* =================== PLAY =================== */
+const meetLine=()=>`Meet at <b>${esc(CONFIG.meetPub)}</b>, ${esc(CONFIG.meetAddr)}${D.settings.start?`, <b>${esc(D.settings.start)}</b>`:""}.`;
 function stateBanner(){
   const st=D.settings.state;
-  if(st==="setup") return `<div class="banner yolk"><b>The game hasn't started yet.</b> Meet at ${esc(CONFIG.meetPub)}${D.settings.start?` at ${esc(D.settings.start)}`:""}. Check-ins open when the chicken starts the game.</div>`;
-  if(st==="finished") return `<div class="banner"><b>Game over.</b> Check the Teams tab for the final standings, and the <a href="#gallery">Gallery</a> for every team's selfies.</div>`;
+  if(st==="setup") return `<div class="banner yolk">${meetLine()} Check-ins open when the chicken starts the game.</div>`;
+  if(st==="finished") return `<div class="banner"><b>Game over.</b> Final standings and every team's selfies are on the <a href="#teams">Teams</a> tab.</div>`;
   return "";
 }
 function joinScreen(){
   return `<div><h1>Bonsoir! Which team are you?</h1><p class="muted" style="margin-top:6px">Type your team number. You only do this once on this phone.</p></div>
+    ${stateBanner()}
     <div class="card"><div class="field"><label for="joinnum">Team number</label><input type="number" id="joinnum" inputmode="numeric" min="1" placeholder="e.g. 1" autocomplete="off" style="font-size:28px;font-weight:700;text-align:center"></div>
       <div class="field"><label for="joinname">Your name (optional)</label><input type="text" id="joinname" placeholder="So the chicken knows who sent what" autocomplete="given-name"></div>
       <button class="btn primary block" data-action="dojoin">Join team</button>
       <p class="sm muted">Not sure of your number? Ask ${esc(CONFIG.hosts)}.</p></div>
-    ${kittyCard()}
-    <div class="banner yolk">Meet at <b>${esc(CONFIG.meetPub)}</b>, ${esc(CONFIG.meetAddr)}${D.settings.start?` at <b>${esc(D.settings.start)}</b>`:""}. ${esc(CONFIG.hosts)} are buying the first round.</div>
-    <div class="card"><div class="row"><div style="min-width:0"><h3>Running the game?</h3><p class="sm muted">Organisers sign in with email and password.</p></div><span class="spacer"></span><button class="btn" data-action="signin">Organiser sign-in</button></div></div>`;
-}
-function organiserHome(){
-  return `<div><h1>Hello, chicken</h1><p class="muted">You're signed in as an organiser. Run the game from Chicken HQ, or preview what a team sees.</p></div>
-    ${stateBanner()}
-    <div class="card"><div class="row"><a class="btn primary" href="#admin">${ICON.admin} Open Chicken HQ${pending().length?` <span class="cnt">${pending().length}</span>`:""}</a><button class="btn" data-action="viewas">Preview a team</button></div></div>
-    ${kittyCard()}
-    <div class="card"><h2>Team numbers</h2><p class="sm muted">Players type these to join.</p>${hunters().map(t=>`<div class="trow"><span class="num" style="font-family:var(--display);font-weight:800;font-size:22px;width:32px">${t.num??"–"}</span><div style="min-width:0"><b>${esc(t.name)}</b><div class="sm muted">${(D.members.filter(m=>m.team_id===t.id).length)} joined</div></div><span class="dot" style="background:${t.color};width:14px;height:14px"></span></div>`).join("")}</div>`;
+    ${kittyCard()}`;
 }
 function viewPlay(){
   const tid=myTeamId();
-  if(!tid) return (isAdmin()&&S.mode!=="local")?organiserHome():joinScreen();
-  const t=teamById(tid), v=visitsOf(tid), clues=D.unlocked[tid]||[], n=v.length, k=D.interval;
-  const toNext=k-(n%k), found=D.found[tid];
+  if(!tid) return joinScreen();
+  const t=teamById(tid), v=visitsOf(tid), clues=D.unlocked[tid]||[], n=v.length, k=D.interval, found=D.found[tid];
   const last=v.length?v[v.length-1]:null, lastIdx=n-1;
   const lastSub=last?subFor(tid,last.pub):null;
   const showChal=last&&isStop(lastIdx)&&!(lastSub&&lastSub.status==="approved");
-  let h=S.viewAs?`<div class="banner yolk row"><span>Previewing <b>${esc(t.name)}</b> as an organiser.</span><span class="spacer"></span><button class="btn sm" data-action="stopview">Stop preview</button></div>`:"";
-  h+=stateBanner();
-  h+=`<div class="hero" style="background:linear-gradient(135deg, ${t.color}, color-mix(in srgb, ${t.color} 62%, #000))">
-    <div class="row" style="position:relative;z-index:1"><span class="lbl" style="color:rgba(255,255,255,.85)">Team ${t.num??""}</span><span class="spacer"></span>${found?'<span class="pill" style="background:#fff;color:#121614">Found the chicken</span>':""}</div>
-    <h1 style="position:relative;z-index:1">${esc(t.name)}</h1>
-    <div class="who">${t.members.map(esc).join(" · ")}</div>
-    <div class="stats"><div class="stat"><b class="num">${n}</b><span>Pubs</span></div><div class="stat"><b class="num">${clues.length}</b><span>Clues</span></div><div class="stat"><b class="num">${found?"—":toNext}</b><span>${found?"Hiding now":"To next challenge"}</span></div></div>
+  let h=S.viewAs?`<div class="banner yolk row"><span>Previewing <b>${esc(t.name)}</b>.</span><span class="spacer"></span><button class="btn sm" data-action="stopview">Stop preview</button></div>`:stateBanner();
+  h+=`<div class="hero"><div class="row"><span class="sw" style="background:${t.color}"></span><span class="lbl">Team ${t.num??""}</span><span class="spacer"></span>${found?'<span class="pill good">Found the chicken</span>':""}</div>
+    <h1>${esc(t.name)}</h1>
+    ${t.members.length?`<p class="muted">${t.members.map(esc).join(" · ")}</p>`:""}
+    <div class="stats"><div><b class="num">${n}</b><span>Pubs</span></div><div><b class="num">${clues.length}</b><span>Clues</span></div></div>
   </div>`;
   h+=kittyCard();
   if(found){
     h+=`<div class="card"><h2>You found them. Now you're the chicken too.</h2><p class="muted">Stay put, keep it quiet, and enjoy watching the others search.</p></div>`;
   } else {
-    h+=`<div class="card"><div class="row"><div style="min-width:0"><h2>${last?`At ${esc(pubById(last.pub).name)}?`:"Ready when you are"}</h2><p class="muted sm">${last?`Checked in ${ago(last.at)}. Moving on? Check in at the next pub.`:`Everyone starts at ${esc(CONFIG.meetPub)}. Check in when you walk into each pub.`}</p></div></div>
-      <div class="progress" aria-label="Progress to next challenge">${Array.from({length:k},(_,i)=>`<i class="${i<(n%k||(n&&showChal?k:0))?"on":""}"></i>`).join("")}</div>
+    h+=`<div class="card"><div><h2>${last?`At ${esc(pubById(last.pub).name)}?`:"Ready when you are"}</h2><p class="muted sm">${last?`Checked in ${ago(last.at)}. Moving on? Check in at the next pub.`:`Everyone starts at ${esc(CONFIG.meetPub)}. Check in when you walk into each pub.`}</p></div>
+      <div class="progress" aria-label="Progress to next challenge pub">${Array.from({length:k},(_,i)=>`<i class="${i<(n%k||(n&&showChal?k:0))?"on":""}"></i>`).join("")}</div>
       <button class="btn primary block" data-action="checkin" ${live()||S.viewAs?"":"disabled"}>${ICON.pin} ${live()||S.viewAs?"Check in to a pub":"Check-ins open when the game starts"}</button></div>`;
     if(showChal) h+=challengeCard(tid,last.pub,lastIdx);
   }
   h+=installCard();
-  h+=`<div class="card"><div class="row"><h2>Clues</h2><span class="spacer"></span><span class="pill yolk">${clues.length} unlocked</span></div>
+  h+=`<div class="card"><div class="row"><h2>Clues</h2><span class="spacer"></span><span class="sm muted">${clues.length} unlocked</span></div>
     ${clues.slice().reverse().map(c=>`<div class="clue"><div class="n">${c.n}</div><div><p>${esc(c.text)}</p><span class="sm muted">Unlocked ${hhmm(c.at)}${c.pub&&pubById(c.pub)?` · from ${esc(pubById(c.pub).name)}`:""}</span></div></div>`).join("")}
     <div class="clue locked"><div class="n">${clues.length+1}</div><div><p>Locked</p><span class="sm muted">Finish the challenge at your next challenge pub and send evidence. The chicken unlocks it.</span></div></div>
   </div>`;
   h+=`<div class="card"><h2>Your crawl</h2>${v.length?`<div class="timeline">${v.slice().reverse().map((x,ri)=>{const i=v.length-1-ri,p=pubById(x.pub),st=isStop(i),s=st?subFor(tid,x.pub):null;
+      const done=s&&s.status==="approved", inline=ri===0&&showChal;
+      /* the latest challenge is the card above; an older unfinished one opens from its pill */
+      const pill=!st?"":done||inline?statusPill(s):`<button class="pillbtn" data-action="openchal" data-pub="${x.pub}" data-i="${i}" aria-label="Open challenge">${statusPill(s)}</button>`;
       return `<div class="tl"><span class="k ${st?"c":""}">${i+1}</span><div style="min-width:0"><b>${esc(p?p.name:"Unknown pub")}</b><div class="sm muted">${hhmm(x.at)}${st?" · challenge pub":""}</div>${selfieThumb(tid,x.pub)}</div>
-      <div class="row" style="gap:6px;justify-content:flex-end">${st?statusPill(s):""}${st&&!(s&&s.status==="approved")?`<button class="btn sm" data-action="openchal" data-pub="${x.pub}" data-i="${i}">Challenge</button>`:""}${ri===0&&!(s&&s.status==="approved")&&!S.viewAs?`<button class="btn sm ghost" data-action="undovisit" data-pub="${x.pub}" aria-label="Undo check-in">Undo</button>`:""}</div></div>`;}).join("")}</div>`
-    :`<div class="empty">${ICON.walk.replace("<svg",'<svg width="28" height="28"')}<span>No pubs yet. Your first check-in starts the clock.</span></div>`}</div>`;
+      <div class="row" style="gap:6px;justify-content:flex-end">${pill}${ri===0&&!done&&!S.viewAs?`<button class="btn sm ghost" data-action="undovisit" data-pub="${x.pub}" aria-label="Undo check-in">Undo</button>`:""}</div></div>`;}).join("")}</div>`
+    :`<div class="empty">${icon("walk",28)}<span>No pubs yet. Your first check-in starts the clock.</span></div>`}</div>`;
   return h;
 }
 /* selfies */
+const selfieInput=(id,tid,pub,cls,label)=>`<label class="${cls}" for="${id}">${label}<input type="file" id="${id}" accept="image/*" capture="user" class="vh" data-action="pickselfie" data-team="${tid}" data-pub="${pub}"></label>`;
 function selfieThumb(tid,pub){
   const sf=selfieFor(tid,pub), u=signedUrl(sf), busy=S.selfieBusy===tid+"|"+pub;
-  if(busy) return `<span class="sthumb ph" aria-label="Uploading selfie">…</span>`;
+  if(busy) return `<span class="sthumb" aria-label="Uploading selfie">…</span>`;
   if(sf) return `<button class="sthumb" data-action="viewselfie" data-team="${tid}" data-pub="${pub}" aria-label="View selfie">${u?`<img src="${esc(u)}" alt="">`:""}</button>`;
-  return live()&&!S.viewAs?`<label class="btn sm selfie-add" for="sf-${pub}">${ICON.cam.replace("<svg",'<svg width="14" height="14"')} Selfie<input type="file" id="sf-${pub}" accept="image/*" capture="user" class="vh" data-action="pickselfie" data-team="${tid}" data-pub="${pub}"></label>`:"";
+  return live()&&!S.viewAs?selfieInput("sf-"+pub,tid,pub,"btn sm selfie-add",`${icon("cam",14)} Selfie`):"";
 }
 function selfieSheet(tid,pub){
   const p=pubById(pub);
-  return `<div class="selfie-ask">${ICON.cam.replace("<svg",'<svg width="40" height="40"')}
+  return `<div class="selfie-ask">${icon("cam",40)}
     <h2>Team selfie at ${esc(p?p.name:"the pub")}</h2>
-    <p class="muted">Proof you made it. Only your team and the chicken see it until the game ends, then it goes in the gallery for everyone.</p>
-    <label class="btn primary block" for="sfs-${pub}">Take the selfie<input type="file" id="sfs-${pub}" accept="image/*" capture="user" class="vh" data-action="pickselfie" data-team="${tid}" data-pub="${pub}"></label>
+    <p class="muted">Proof you made it. Only your team and the chicken see it until the game ends, then everyone can.</p>
+    ${selfieInput("sfs-"+pub,tid,pub,"btn primary block","Take the selfie")}
     <button class="btn block ghost" data-action="closesheet">Skip for now</button></div>`;
 }
 function selfieViewSheet(tid,pub){
-  const sf=selfieFor(tid,pub), u=signedUrl(sf), t=teamById(tid)||{name:tid,color:"#888"}, p=pubById(pub);
+  const sf=selfieFor(tid,pub), u=signedUrl(sf), t=teamOr(tid), p=pubById(pub);
   const canRetake=live()&&!S.viewAs&&tid===myTeamId();
-  return `<div class="row"><span class="dot" style="background:${t.color}"></span><b>${esc(t.name)}</b><span class="spacer"></span><button class="btn sm ghost" data-action="closesheet">Close</button></div>
+  return `<div class="row">${dot(t.color)}<b>${esc(t.name)}</b><span class="spacer"></span>${closeBtn}</div>
     <div class="selfie-big">${u?`<img src="${esc(u)}" alt="${esc(t.name)} at ${esc(p?p.name:"")}">`:'<div class="media-ph" style="width:100%;height:320px">Loading…</div>'}</div>
     <p class="sm muted">${esc(p?p.name:"")}${sf?` · ${hhmm(sf.at)}`:""}</p>
-    ${canRetake?`<label class="btn block" for="sfr-${pub}">${ICON.cam.replace("<svg",'<svg width="16" height="16"')} Retake<input type="file" id="sfr-${pub}" accept="image/*" capture="user" class="vh" data-action="pickselfie" data-team="${tid}" data-pub="${pub}"></label>`:""}`;
+    ${canRetake?selfieInput("sfr-"+pub,tid,pub,"btn block",`${icon("cam",16)} Retake`):""}`;
 }
 async function uploadSelfie(tid,pub,file){
   const key=tid+"|"+pub, old=selfieFor(tid,pub);
@@ -478,51 +494,50 @@ function shrinkToDataUrl(blob,max){ return createImageBitmap(blob).then(bmp=>{co
 /* everyone sees what's left; organisers knock off each round they buy */
 function kittyCard(){
   const k=D.kitty, admin=isAdmin()&&!S.viewAs;
-  if(!k.total&&!D.spends.length) return admin?`<div class="card"><div class="row"><div style="min-width:0"><h3>${ICON.kitty.replace("<svg",'<svg width="18" height="18" style="vertical-align:-3px"')} Kitty</h3><p class="sm muted">Set the total in Chicken HQ → Kitty and everyone sees it count down.</p></div><span class="spacer"></span><button class="btn sm" data-action="gokitty">Set it up</button></div></div>`:"";
+  if(!k.total&&!D.spends.length) return "";
   const pct=k.total?Math.max(0,Math.min(100,k.left/k.total*100)):0, lvl=k.left<0||pct<10?"low":pct<25?"mid":"ok", last=D.spends[0];
-  return `<div class="card kitty ${lvl}"><div class="row"><span class="lbl">${ICON.kitty.replace("<svg",'<svg width="14" height="14" style="vertical-align:-2px"')} Kitty</span><span class="spacer"></span>${admin?`<button class="btn sm yolk" data-action="spend">Bought a round</button>`:""}</div>
+  return `<div class="card kitty ${lvl}"><div class="row"><span class="lbl">${icon("kitty",14,"vertical-align:-2px")} Kitty</span><span class="spacer"></span>${admin?`<button class="btn sm yolk" data-action="spend">Bought a round</button>`:""}</div>
     <div class="kbig"><b class="num">${money(Math.abs(k.left))}</b><span>${k.left<0?"over budget":"left"}</span></div>
     <div class="kbar" role="meter" aria-valuemin="0" aria-valuemax="${k.total}" aria-valuenow="${Math.max(0,k.left)}" aria-label="Kitty left"><i style="width:${pct}%"></i></div>
     <div class="sm muted">${money(k.spent)} spent of ${money(k.total)}${D.spends.length?` · ${D.spends.length} ${D.spends.length===1?"round":"rounds"}`:""}${last?` · last ${money(last.amount)} ${agoSpan(last.at)}`:""}</div></div>`;
 }
 function spendSheet(){
-  return `<div class="row"><h2>Bought a round</h2><span class="spacer"></span><button class="btn sm ghost" data-action="closesheet">Close</button></div>
+  return `${sheetHead("Bought a round")}
     <p class="sm muted">${money(D.kitty.left)} left in the kitty.</p>
     <div class="field"><label for="spend-amt">How much? (£)</label><input type="text" id="spend-amt" inputmode="decimal" placeholder="e.g. 42.50" autocomplete="off" autofocus style="font-size:28px;font-weight:700;text-align:center"></div>
     <div class="field"><label for="spend-note">What for? (optional)</label><input type="text" id="spend-note" placeholder="e.g. Round for the found teams"></div>
     <p class="sm muted">Everyone can see the amount and note, so don't name the pub you're hiding in.</p>
     <button class="btn primary block" data-action="dospend">Take it off the kitty</button>`;
 }
+/* HQ → Setup: the total and the log. Rounds are added from the kitty card on HQ → Live. */
 function adminKitty(){
   const k=D.kitty;
-  return `${kittyCard()}
-    <div class="card"><h2>Kitty total</h2><p class="sm muted">Usually the buy-in (${esc(D.settings.buyIn||"£15")}) times the number of players. Everyone can see the total and what's left.</p>
-      <div class="row"><input type="text" id="kitty-total" inputmode="decimal" value="${k.total||""}" placeholder="e.g. 240" aria-label="Kitty total in pounds" style="flex:1;min-width:120px"><button class="btn primary" data-action="savekitty">Save total</button></div></div>
-    <div class="card"><div class="row"><h2>Rounds bought</h2><span class="spacer"></span><button class="btn sm yolk" data-action="spend">Add a round</button></div>
-      ${D.spends.length?D.spends.map(x=>`<div class="trow"><b class="num">${money(x.amount)}</b><div style="min-width:0"><span>${esc(x.note||"Round")}</span><div class="sm muted">${hhmm(x.at)} · ${agoSpan(x.at)}</div></div><button class="btn sm ghost danger" data-action="delspend" data-id="${esc(x.id)}">Remove</button></div>`).join(""):'<p class="sm muted">Nothing spent yet.</p>'}</div>`;
+  return `<div class="card"><h2>Kitty</h2><p class="sm muted">Usually the buy-in (${esc(D.settings.buyIn||"£15")}) times the number of players. Everyone sees the total and what's left. Log rounds from HQ → Live.</p>
+      <div class="row"><input type="text" id="kitty-total" inputmode="decimal" value="${k.total||""}" placeholder="e.g. 240" aria-label="Kitty total in pounds" style="flex:1;min-width:120px"><button class="btn primary" data-action="savekitty">Save total</button></div>
+      ${D.spends.length?D.spends.map(x=>`<div class="trow"><b class="num">${money(x.amount)}</b><div style="min-width:0"><span>${esc(x.note||"Round")}</span><div class="sm muted">${hhmm(x.at)} · ${agoSpan(x.at)}</div></div><button class="btn sm ghost danger" data-action="delspend" data-id="${esc(x.id)}">Remove</button></div>`).join(""):""}</div>`;
 }
 const parseMoney=v=>{const n=parseFloat(String(v||"").replace(/[£,\s]/g,"")); return isFinite(n)?Math.round(n*100)/100:NaN;};
 
 /* =================== GALLERY =================== */
 function galleryTile(sf){
-  const t=teamById(sf.team)||{name:sf.team,color:"#888"}, p=pubById(sf.pub), u=signedUrl(sf);
+  const t=teamOr(sf.team), p=pubById(sf.pub), u=signedUrl(sf);
   return `<button class="gtile" data-action="viewselfie" data-team="${sf.team}" data-pub="${sf.pub}">
     ${u?`<img src="${esc(u)}" alt="${esc(t.name)} at ${esc(p?p.name:"")}" loading="lazy">`:'<span class="media-ph">Loading…</span>'}
     <span class="cap"><span class="dot" style="background:${t.color}"></span><span>${esc(S.galBy==="team"?(p?p.name:""):t.name)}</span></span></button>`;
 }
-function viewGallery(){
+/* shown under the standings on the Teams tab once the game is finished (organisers always) */
+function gallerySection(){
   const all=Object.values(D.selfies);
-  let h=`<div><h1>Gallery</h1><p class="muted">Every team selfie from the crawl.</p></div>`;
-  if(isAdmin()&&!finished()) h+=`<div class="banner yolk">Players see the gallery once you set the game to <b>Finished</b>. Until then each team only sees its own selfies.</div>`;
-  h+=`<div class="segs" role="group" aria-label="Group selfies by">${[["team","By team"],["pub","By pub"]].map(([k,l])=>`<button type="button" data-action="galby" data-k="${k}" aria-pressed="${S.galBy===k}">${l}</button>`).join("")}</div>`;
-  if(!all.length) return h+`<div class="card empty">${ICON.gallery.replace("<svg",'<svg width="28" height="28"')}<b style="color:var(--ink)">No selfies yet</b><span>Teams add one each time they check in to a pub.</span></div>`;
+  let h=`<div class="row" id="gallery"><h2>Selfies</h2><span class="spacer"></span><div class="segs" role="group" aria-label="Group selfies by">${[["team","By team"],["pub","By pub"]].map(([k,l])=>`<button type="button" data-action="galby" data-k="${k}" aria-pressed="${S.galBy===k}">${l}</button>`).join("")}</div></div>`;
+  if(isAdmin()&&!finished()) h+=`<p class="sm muted">Players see everyone's selfies once you set the game to Finished.</p>`;
+  if(!all.length) return h+`<div class="card empty">${icon("gallery",28)}<span>No selfies yet. Teams add one each time they check in.</span></div>`;
   if(S.galBy==="team"){
     h+=hunters().map(t=>{const order=visitsOf(t.id).map(v=>v.pub), list=all.filter(x=>x.team===t.id).sort((a,b)=>order.indexOf(a.pub)-order.indexOf(b.pub));
-      return list.length?`<div class="card"><div class="row"><span class="dot" style="background:${t.color};width:14px;height:14px"></span><h2>${esc(t.name)}</h2><span class="spacer"></span><span class="pill">${list.length} ${list.length===1?"pub":"pubs"}</span></div><div class="ggrid">${list.map(galleryTile).join("")}</div></div>`:"";}).join("");
+      return list.length?`<div class="card"><div class="row">${dot(t.color,14)}<h3>${esc(t.name)}</h3><span class="spacer"></span><span class="sm muted">${list.length} ${list.length===1?"pub":"pubs"}</span></div><div class="ggrid">${list.map(galleryTile).join("")}</div></div>`:"";}).join("");
   } else {
     const byPub={}; all.forEach(x=>(byPub[x.pub]=byPub[x.pub]||[]).push(x));
     h+=Object.entries(byPub).sort((a,b)=>Math.min(...a[1].map(x=>x.at))-Math.min(...b[1].map(x=>x.at))).map(([pid,list])=>{const p=pubById(pid);
-      return `<div class="card"><div class="row"><h2>${esc(p?p.name:"Unknown pub")}</h2><span class="spacer"></span><span class="pill">${list.length} ${list.length===1?"team":"teams"}</span></div><div class="ggrid">${list.sort((a,b)=>a.at-b.at).map(galleryTile).join("")}</div></div>`;}).join("");
+      return `<div class="card"><div class="row"><h3>${esc(p?p.name:"Unknown pub")}</h3><span class="spacer"></span><span class="sm muted">${list.length} ${list.length===1?"team":"teams"}</span></div><div class="ggrid">${list.sort((a,b)=>a.at-b.at).map(galleryTile).join("")}</div></div>`;}).join("");
   }
   return h;
 }
@@ -536,13 +551,14 @@ function challengeCard(tid,pubId,i){
     <p>${c&&c.text?esc(c.text):`The chicken hasn't posted this challenge yet. Message ${esc(CONFIG.hosts)} for it, then send your evidence here.`}</p>
     ${s&&s.status==="pending"?`<div class="banner">Evidence sent ${ago(s.at)}. Hang tight while the chicken checks it. Your clue appears here as soon as they approve.</div>`:
     `${s&&s.status==="rejected"?`<div class="banner"><b>Not quite.</b> ${esc(s.reviewNote||"Have another go and resend.")}</div>`:""}
-     <label class="drop" for="ev-${pubId}">${ICON.cam.replace("<svg",'<svg width="26" height="26"')}<b style="color:var(--ink)">Add photo or video</b><span class="sm">Images are shrunk automatically. Videos up to 20 MB.</span>
+     <label class="drop" for="ev-${pubId}">${icon("cam",26)}<b style="color:var(--ink)">Add photo or video</b><span class="sm">Images are shrunk automatically. Videos up to 20 MB.</span>
        <input type="file" id="ev-${pubId}" accept="image/*,video/*" multiple data-action="pickfiles" data-key="${dk}"></label>
      ${dr.files.length?`<div class="media-prev">${dr.files.map(f=>f.type.startsWith("video")?`<video src="${f.preview}" muted playsinline></video>`:`<img src="${f.preview}" alt="">`).join("")}</div>`:""}
      <div class="field"><label for="note-${pubId}">Anything to add?</label><input type="text" id="note-${pubId}" data-action="note" data-key="${dk}" value="${esc(dr.note)}" placeholder="e.g. Ellie did the tower solo"></div>
      <button class="btn yolk block" data-action="submit" data-team="${tid}" data-pub="${pubId}" data-i="${i}" ${canSend?"":"disabled"}>Send evidence to the chicken</button>`}
   </div>`;
 }
+const challengeSheet=(tid,pub,i)=>openSheet(sheetHead("")+challengeCard(tid,pub,i));
 
 let deferredInstall=null;
 window.addEventListener("beforeinstallprompt",e=>{e.preventDefault();deferredInstall=e;renderAll();});
@@ -557,12 +573,17 @@ function installCard(){
 function checkinSheet(q){
   const tid=myTeamId(), from=lastPubOf(tid)||START, seen=new Set(visitsOf(tid).map(v=>v.pub));
   const list=PUBS.filter(p=>!q||p.name.toLowerCase().includes(q.toLowerCase())).map(p=>({p,m:metres(from,p)})).sort((a,b)=>a.m-b.m);
-  return `<div class="row"><h2>Which pub?</h2><span class="spacer"></span><button class="btn sm ghost" data-action="closesheet">Close</button></div>
+  return `${sheetHead("Which pub?")}
     <input type="search" id="pubq" placeholder="Search ${PUBS.length} pubs" value="${esc(q||"")}" autocomplete="off" aria-label="Search pubs">
     <p class="sm muted">Sorted by distance from ${esc(from.name)}.</p>
-    <div class="items" style="display:grid;gap:6px" id="pubqlist">${list.map(({p,m})=>`<button class="pubrow" data-action="confirmcheckin" data-pub="${p.id}" ${seen.has(p.id)?"disabled":""}>
-      <span class="ic ${p.id===START.id?"start":""} ${seen.has(p.id)?"done":""}">${seen.has(p.id)?"✓":p.id===START.id?"GO":fmtMi(m).replace(" mi","")}</span>
-      <span style="min-width:0"><b>${esc(p.name)}</b><small>${seen.has(p.id)?"Already visited":`${walkMin(m)} min walk · ${fmtMi(m)}`}</small></span><span></span></button>`).join("")}</div>`;
+    <div class="items" id="pubqlist">${list.map(({p,m})=>pubRow(p,{action:"confirmcheckin",m,seen:seen.has(p.id),disabled:seen.has(p.id),
+      meta:seen.has(p.id)?"Already visited":`${walkMin(m)} min walk · ${fmtMi(m)}`})).join("")}</div>`;
+}
+/* one pub row for the check-in sheet and the map list; the badge shows miles, or a tick once visited */
+function pubRow(p,{action,m,seen,disabled,sel,meta}){
+  return `<button class="pubrow ${sel?"sel":""}" data-action="${action}" data-pub="${p.id}" ${disabled?"disabled":""}>
+    <span class="ic ${p.id===START.id?"start":""} ${seen?"done":""}">${seen?"✓":fmtMi(m).replace(" mi","")}</span>
+    <span style="min-width:0"><b>${esc(p.name)}</b><small>${meta}</small></span></button>`;
 }
 
 /* =================== MAP =================== */
@@ -613,7 +634,7 @@ function pubCard(p, full){
   const tags=[p.id===START.id?'<span class="pill yolk">Meeting point</span>':"", p.garden?'<span class="pill">Beer garden</span>':"", p.food?'<span class="pill">Food</span>':"", p.brand?`<span class="pill">${esc(p.brand)}</span>`:""].join("");
   return `<div class="pcard"><div class="pc-h"><b>${esc(p.name)}</b>${p.addr?`<span class="sm muted">${esc(p.addr)}</span>`:""}</div>
     <div class="pc-grid">
-      <div><span class="lbl">Pint</span><b class="num">${i.price?esc(/^\d/.test(i.price)?"£"+i.price:i.price):"–"}</b><span class="sm muted">${i.price?"average":"not added yet"}</span></div>
+      <div><span class="lbl">Pint</span><b class="num">${i.price?esc(fmtPrice(i.price)):"–"}</b><span class="sm muted">${i.price?"average":"not added yet"}</span></div>
       <div><span class="lbl">Today</span><b class="${now&&now.open?"ok":now&&now.open===false?"no":""}">${now?(now.open?"Open":now.open===false?"Closed":"–"):"–"}</b><span class="sm muted">${now?esc(now.txt):"Hours not listed"}</span></div>
       <div><span class="lbl">Walk</span><b class="num">${walkMin(dm||p.d)} min</b><span class="sm muted">from ${dm?"your last pub":"the station"}</span></div>
     </div>
@@ -647,13 +668,11 @@ function renderPubList(){
   const tid=myTeamId(), seen=new Set(tid?visitsOf(tid).map(v=>v.pub):[]), q=S.q.toLowerCase();
   const list=PUBS.filter(p=>!q||p.name.toLowerCase().includes(q));
   const shown=visibleTeamsOnMap();
-  const legend=shown.map(t=>{const lp=lastPubOf(t.id);return `<div class="row sm" style="gap:8px"><span class="dot" style="background:${t.color}"></span><b>${esc(t.name)}</b><span class="spacer"></span><span class="muted">${lp?esc(lp.name):"Not started"}</span></div>`;}).join("");
-  const hiddenNote=!isAdmin()?'<span class="sm muted">Other teams are hidden. Only the chicken can see where everyone is.</span>':"";
-  el.innerHTML=`<div class="card" style="gap:8px"><span class="lbl">${isAdmin()?"Teams last seen":"Your team"}</span>${legend||'<span class="sm muted">Join a team to see your trail here.</span>'}${hiddenNote}<div class="row sm" style="gap:8px"><span class="dot" style="background:${chicken().color}"></span><b>${esc(chicken().name)}</b><span class="spacer"></span><span class="pill yolk">Hiding</span></div></div>
-    <input type="search" id="mapq" placeholder="Search pubs" value="${esc(S.q)}" aria-label="Search pubs" autocomplete="off">
-    <div class="items">${list.map(p=>`<button class="pubrow ${S.selPub===p.id?"sel":""}" data-action="focuspub" data-pub="${p.id}">
-      <span class="ic ${p.id===START.id?"start":""} ${seen.has(p.id)?"done":""}">${seen.has(p.id)?"✓":p.id===START.id?"GO":fmtMi(p.d).replace(" mi","")}</span>
-      <span style="min-width:0"><b>${esc(p.name)}</b><small>${(()=>{const i=infoOf(p),n=hoursNow(i.hours);return [p.id===START.id?"Meeting point":"", n?n.txt:"", i.price?(/^\d/.test(i.price)?"£"+i.price:i.price)+" pint":"", fmtMi(p.d)].filter(Boolean).join(" · ");})()}</small></span><span></span></button>`).join("")||'<p class="sm muted">No pubs match that.</p>'}</div>`;
+  const legend=shown.length?`<div class="row sm" style="gap:12px">${shown.map(t=>`<span class="row" style="gap:6px">${dot(t.color)}${esc(t.name)}</span>`).join("")}</div>`:"";
+  const meta=p=>{const i=infoOf(p),n=hoursNow(i.hours);return [p.id===START.id?"Meeting point":"", n?n.txt:"", i.price?fmtPrice(i.price)+" pint":""].filter(Boolean).join(" · ")||"&nbsp;";};
+  el.innerHTML=`${legend}
+    <input type="search" id="mapq" placeholder="Search ${PUBS.length} pubs" value="${esc(S.q)}" aria-label="Search pubs" autocomplete="off">
+    <div class="items">${list.map(p=>pubRow(p,{action:"focuspub",m:p.d,seen:seen.has(p.id),sel:S.selPub===p.id,meta:meta(p)})).join("")||'<p class="sm muted">No pubs match that.</p>'}</div>`;
 }
 
 /* =================== TEAMS =================== */
@@ -667,12 +686,13 @@ function viewTeams(){
   const list=open?ranked:hunters();
   const card=(t,i)=>{const st=stats[t.id], f=fo.indexOf(t.id), seeDetail=open||t.id===mine;
     return `<article class="teamcard"><div class="top"><span class="sw" style="background:${t.color}">${t.chicken?"P":open?i+1:t.num??""}</span><div style="min-width:0"><h3>${esc(t.name)}${t.id===mine?' <span class="pill">You</span>':""}</h3><span class="sm muted">${t.chicken?"The chicken":`Team ${t.num??""}`}</span></div><span class="spacer"></span>
-      ${t.chicken?'<span class="pill yolk">Hiding</span>':f>=0&&seeDetail?`<span class="pill good">Found ${ordinal(f)}</span>`:seeDetail?'<span class="pill">Hunting</span>':`<span class="pill">${ICON.lock.replace("<svg",'<svg width="12" height="12"')} Hidden</span>`}</div>
+      ${t.chicken?'<span class="pill">Hiding</span>':f>=0&&seeDetail?`<span class="pill good">Found ${ordinal(f)}</span>`:seeDetail?'<span class="pill">Hunting</span>':`<span class="pill">${icon("lock",12)} Hidden</span>`}</div>
       <div class="body">${t.members.length?`<div class="members">${t.members.map(m=>`<span>${esc(m)}</span>`).join("")}</div>`:""}
       ${t.chicken?"":seeDetail&&st?`<div class="kpis"><div><b class="num">${st.pubs}</b><span>Pubs</span></div><div><b class="num">${st.clues}</b><span>Clues</span></div><div><b class="num">${f>=0?ordinal(f):"–"}</b><span>Found</span></div></div>`:""}
       </div></article>`;};
   return `<div><h1>Teams</h1><p class="muted">${open?"Ranked by who found the chicken first, then by clues unlocked.":"Scores stay secret until the end of the game. You can see your own team's progress."}</p></div>
-    <div class="grid2">${card(chicken(),0)}${list.map(card).join("")}</div>`;
+    <div class="grid2">${card(chicken(),0)}${list.map(card).join("")}</div>
+    ${galleryOpen()?gallerySection():""}`;
 }
 
 /* =================== RULES =================== */
@@ -681,29 +701,16 @@ function houseList(){ const r=D.settings.house; return Array.isArray(r)&&r.lengt
 function viewRules(){
   return `<div><h1>How to play</h1><p class="muted">Où est le Poulet is hide and seek with pubs. The chicken hides, everyone else drinks their way to finding them.</p></div>
   <div class="facts">
-    <div class="fact yolk"><span class="lbl">Buy-in</span><b>${esc(D.settings.buyIn||"£15")}</b><span class="sm">Per person, paid at the start. It goes in the kitty for the chicken's hideout.</span></div>
+    <div class="fact"><span class="lbl">Buy-in</span><b>${esc(D.settings.buyIn||"£15")}</b><span class="sm muted">Per person, paid at the start. It goes in the kitty.</span></div>
     <div class="fact"><span class="lbl">Meet</span><b>${esc(CONFIG.meetPub)}</b><span class="sm muted">${esc(CONFIG.meetAddr)}. ${esc(CONFIG.hosts)} buy the first round.${D.settings.start?` Start time: <b>${esc(D.settings.start)}</b>.`:""}</span></div>
     <div class="fact"><span class="lbl">Play area</span><b>${CONFIG.radiusMiles} mile${CONFIG.radiusMiles===1?"":"s"}</b><span class="sm muted">From Balham station. ${PUBS.length} pubs to choose from.</span></div>
-    <div class="fact"><span class="lbl">Challenges</span><b>Every ${D.interval===1?"pub":D.interval===2?"2nd pub":D.interval+"th pub"}</b><span class="sm muted">Pass it, send proof, unlock a clue.</span></div>
   </div>
-  <h2>The classic rules</h2>
+  <h2>The rules</h2>
   <ol class="steps">${rulesList().map(r=>`<li><div><h3>${esc(r.t)}</h3><p>${esc(r.b)}</p></div></li>`).join("")}</ol>
-  <div class="grid2">
-    <div class="card"><h2>House rules</h2><ul class="plain">${houseList().map(x=>`<li>${esc(x)}</li>`).join("")}</ul></div>
-    <div class="card"><h2>Using this app</h2><ul class="plain">
-      <li>Type your team number on the Play tab. Your phone remembers it.</li>
-      <li>Tap <b>Check in to a pub</b> each time you arrive somewhere new.</li>
-      <li>On challenge pubs, send your proof right from the challenge card.</li>
-      <li>Clues appear on the Play tab the moment the chicken approves.</li>
-      <li>Only your team sees your progress. The chicken sees everything.</li>
-    </ul></div>
-  </div>
-  <div class="card"><div class="row"><div style="min-width:0"><h2>Organisers</h2><p class="sm muted">${S.me.isAdmin?`Signed in as ${esc(S.me.email||"")}.`:"Running the game? Sign in to open Chicken HQ."}</p></div><span class="spacer"></span>
-    ${S.me.isAdmin?'<a class="btn" href="#admin">Open Chicken HQ</a>':S.me.email?'<span class="pill bad">Not on the organiser list</span><button class="btn sm" data-action="signout">Sign out</button>':'<button class="btn" data-action="signin">Organiser sign-in</button>'}</div></div>`;
+  <div class="card"><h2>House rules</h2><ul class="plain">${houseList().map(x=>`<li>${esc(x)}</li>`).join("")}</ul></div>`;
 }
 function signinSheet(){
-  if(!sb) return `<h2>Organiser sign-in</h2><p class="muted">Demo mode is on, so Chicken HQ is open to everyone on this device. Connect Supabase in config.js to lock it down.</p><button class="btn block" data-action="closesheet">OK</button>`;
-  return `<div class="row"><h2>Organiser sign-in</h2><span class="spacer"></span><button class="btn sm ghost" data-action="closesheet">Close</button></div>
+  return `${sheetHead("Organiser sign-in")}
     <form id="signinform" style="display:grid;gap:12px">
       <div class="field"><label for="signin-email">Email</label><input type="text" id="signin-email" inputmode="email" autocomplete="username" autocapitalize="off" autofocus></div>
       <div class="field"><label for="signin-pw">Password</label><input type="password" id="signin-pw" autocomplete="current-password"></div>
@@ -712,58 +719,70 @@ function signinSheet(){
 }
 
 /* =================== ADMIN =================== */
-const ATABS=[["activity","Activity"],["review","Review"],["kitty","Kitty"],["game","Game"],["teams","Teams & players"],["clues","Hideout & clues"],["challenges","Pubs & challenges"],["rules","Rules"]];
+/* Chicken HQ: Live (running the night), Setup (game, kitty, teams, organisers), Content (what players read) */
+const ATABS=[["live","Live"],["setup","Setup"],["content","Content"]];
 function viewAdmin(){
-  const pc=pending().length;
-  const uc=unseenCount();
-  let h=`<div><h1>Chicken HQ</h1><p class="muted">Organisers only. You can see every team, approve evidence and set up the game.</p></div>
-    ${S.mode==="local"?'<div class="banner yolk">Demo mode: everything saves on this device only. Add your Supabase details to config.js to run the real game.</div>':`<div class="row sm"><span class="muted">Signed in as ${esc(S.me.email||"")}</span><span class="spacer"></span><button class="btn sm" data-action="signout">Sign out</button></div>`}
-    <div class="segs" role="group" aria-label="Chicken HQ sections">${ATABS.map(([k,l])=>`<button type="button" data-action="atab" data-k="${k}" aria-pressed="${S.adminTab===k}">${l}${k==="review"&&pc?` <span class="cnt">${pc}</span>`:k==="activity"&&uc?` <span class="cnt">${uc}</span>`:""}</button>`).join("")}</div>`;
-  h+=({activity:adminActivity,review:adminReview,kitty:adminKitty,game:adminGame,teams:adminTeams,clues:adminClues,challenges:adminChallenges,rules:adminRules})[S.adminTab]();
-  return h;
+  const n=pending().length+unseenCount();
+  return `<div><h1>Chicken HQ</h1>${S.mode==="local"?'<p class="muted">Demo mode: everything saves on this device only. Add your Supabase details to config.js to run the real game.</p>':""}</div>
+    <div class="segs" role="group" aria-label="Chicken HQ sections">${ATABS.map(([k,l])=>`<button type="button" data-action="atab" data-k="${k}" aria-pressed="${S.adminTab===k}">${l}${k==="live"&&n?` <span class="cnt">${n}</span>`:""}</button>`).join("")}</div>
+    ${({live:adminLive,setup:adminSetup,content:adminContent})[S.adminTab]()}`;
 }
 function mediaHtml(s){return (s.media||[]).map(m=>{const u=signedUrl(m); if(!u) return `<div class="media-ph">${m.demo?"Demo photo":"Loading…"}</div>`;
   return m.type&&m.type.startsWith("video")?`<video src="${esc(u)}" controls playsinline preload="metadata"></video>`:`<a href="${esc(u)}" target="_blank" rel="noopener"><img src="${esc(u)}" alt="Evidence photo" loading="lazy"></a>`;}).join("");}
-function memberName(userId){const m=D.members.find(x=>x.user_id===userId); return m&&m.display_name?m.display_name:"";}
-/* check-in feed: organisers only (the database never sends other teams' visits to players) */
 function lastSeenLine(tid){
   const v=visitsOf(tid), last=v[v.length-1];
   if(!last) return `<span class="sm muted">No check-ins yet</span>`;
   const p=pubById(last.pub), stale=live()&&!D.found[tid]&&Date.now()-last.at>STALE_MIN*60000;
-  return `<span class="sm lastseen ${stale?"stale":""}" ${D.found[tid]?"":`data-stale="${last.at}"`}>Last checked in to <b>${esc(p?p.name:"?")}</b> · ${hhmm(last.at)} · ${agoSpan(last.at)}</span>`;
+  return `<span class="sm lastseen ${stale?"stale":""}" ${D.found[tid]?"":`data-stale="${last.at}"`}>At <b>${esc(p?p.name:"?")}</b> · ${hhmm(last.at)} · ${agoSpan(last.at)}</span>`;
 }
-function adminActivity(){
-  const f=S.actTeam, list=allVisits().filter(v=>!f||v.team===f).slice(0,150);
-  const rows=list.map(v=>{const t=teamById(v.team)||{name:v.team,color:"#888"}, p=pubById(v.pub), n=visitsOf(v.team).findIndex(x=>x.pub===v.pub)+1, sf=selfieFor(v.team,v.pub), u=signedUrl(sf);
-    return `<div class="trow act ${v.at>(S.prevSeen||S.seenAt)?"new":""}"><span class="dot" style="background:${t.color};width:14px;height:14px"></span>
-      <div style="min-width:0"><b>Team ${t.num??""} · ${esc(t.name)}</b><div class="sm">checked in to <b>${esc(p?p.name:"?")}</b> <span class="muted">(pub ${n})</span></div><div class="sm muted">${hhmm(v.at)} · ${agoSpan(v.at)}</div></div>
-      ${sf?`<button class="sthumb" data-action="viewselfie" data-team="${v.team}" data-pub="${v.pub}" aria-label="View selfie">${u?`<img src="${esc(u)}" alt="">`:""}</button>`:'<span class="pill">No selfie</span>'}</div>`;}).join("");
-  return `<div class="card"><h2>Where everyone is</h2>${hunters().map(t=>`<div class="trow"><span class="dot" style="background:${t.color}"></span><div style="min-width:0"><b>${esc(t.name)}</b><div>${D.found[t.id]?'<span class="sm muted">Found the chicken</span>':lastSeenLine(t.id)}</div></div><span></span></div>`).join("")}</div>
-    <div class="card"><div class="row"><h2>Check-ins</h2><span class="spacer"></span><select id="actteam" aria-label="Filter by team" style="width:auto"><option value="">All teams</option>${hunters().map(t=>`<option value="${t.id}" ${f===t.id?"selected":""}>Team ${t.num??""} · ${esc(t.name)}</option>`).join("")}</select></div>
-      <p class="sm muted">Only organisers see this. A pop-up appears here the moment any team checks in.</p>
-      ${rows||'<div class="empty"><span>No check-ins yet.</span></div>'}</div>`;
-}
+
+/* ---- Live ---- */
+function adminLive(){ return kittyCard()+adminReview()+adminBoard()+adminFeed(); }
 function adminReview(){
   const p=pending(), done=D.subs.filter(s=>s.status!=="pending").slice(0,12);
-  const subCard=s=>{const t=teamById(s.team)||{name:s.team,color:"#888"}, pub=pubById(s.pub), c=D.challenges[s.pub]||D.challenges._all, n=(D.unlocked[s.team]||[]).length;
+  const subCard=s=>{const t=teamOr(s.team), pub=pubById(s.pub), c=D.challenges[s.pub]||D.challenges._all, n=(D.unlocked[s.team]||[]).length;
     const nextClue=(D.secret.clues[n]||"").trim()||autoClue(n,pub);
-    return `<div class="card sub"><div class="row"><span class="dot" style="background:${t.color};width:14px;height:14px"></span><h3>${esc(t.name)}</h3><span class="spacer"></span><span class="sm muted">${ago(s.at)}</span></div>
+    return `<div class="card sub"><div class="row">${dot(t.color,14)}<h3>${esc(t.name)}</h3><span class="spacer"></span><span class="sm muted">${ago(s.at)}</span></div>
       <div class="sm"><b>${esc(pub?pub.name:"?")}</b> · stop ${s.stop}${c&&c.title?` · ${esc(c.title)}`:""}</div>
-      ${s.media&&s.media.length?`<div class="media-prev">${mediaHtml(s)}</div>`:`<div class="banner sm">No photo or video attached${s.note?"":". They may show you in person."}</div>`}
+      ${s.media&&s.media.length?`<div class="media-prev">${mediaHtml(s)}</div>`:`<p class="sm muted">No photo or video attached${s.note?"":". They may show you in person."}</p>`}
       ${s.note?`<p>“${esc(s.note)}”</p>`:""}
       <div class="banner yolk sm"><b>Approving unlocks clue ${n+1}:</b> ${esc(nextClue)}</div>
       <div class="row"><button class="btn good" data-action="approve" data-id="${esc(s._id)}">Approve and unlock</button>
         <input type="text" id="rej-${esc(s._id)}" placeholder="Reason (optional)" style="flex:1;min-width:140px">
         <button class="btn danger" data-action="reject" data-id="${esc(s._id)}">Send back</button></div></div>`;};
-  return `${p.length?p.map(subCard).join(""):`<div class="card empty"><b style="color:var(--ink)">Nothing to review</b><span>New evidence shows up here the moment a team sends it.</span></div>`}
-    ${done.length?`<div class="card"><h2>Recently reviewed</h2>${done.map(s=>{const t=teamById(s.team)||{name:s.team,color:"#888"};return `<div class="trow"><span class="dot" style="background:${t.color}"></span><div style="min-width:0"><b>${esc(t.name)}</b> <span class="sm muted">· ${esc((pubById(s.pub)||{}).name||"")}</span></div>${statusPill(s)}</div>`;}).join("")}</div>`:""}`;
+  return p.map(subCard).join("")+(done.length?`<details class="card"><summary><b>Reviewed evidence</b> <span class="sm muted">(${done.length})</span></summary>
+    ${done.map(s=>{const t=teamOr(s.team);return `<div class="trow">${dot(t.color)}<div style="min-width:0"><b>${esc(t.name)}</b> <span class="sm muted">· ${esc((pubById(s.pub)||{}).name||"")}</span></div>${statusPill(s)}</div>`;}).join("")}</details>`:"");
 }
-function adminGame(){
+/* one row per team: where they are, how they're doing, and what you can do about it */
+function adminBoard(){
+  return `<div class="card"><h2>Teams</h2>${hunters().map(t=>{const v=visitsOf(t.id), n=(D.unlocked[t.id]||[]).length, f=D.found[t.id], sel=v.filter(x=>selfieFor(t.id,x.pub)).length;
+    return `<div class="trow board">${dot(t.color,14)}
+      <div style="display:grid;gap:6px;min-width:0"><div class="row" style="gap:8px"><b>${esc(teamLabel(t))}</b>${f?'<span class="pill good">Found</span>':""}</div>
+        <span class="sm muted">${v.length} pubs · ${n} clues · ${sel}/${v.length} selfies</span>
+        ${f?"":lastSeenLine(t.id)}
+        <div class="row" style="gap:6px"><button class="btn sm" data-action="unlock" data-team="${t.id}">Unlock clue ${n+1}</button>
+          ${n?`<button class="btn sm ghost" data-action="relock" data-team="${t.id}">Re-lock ${n}</button>`:""}
+          <button class="btn sm ${f?"ghost":"good"}" data-action="found" data-team="${t.id}">${f?"Undo found":"Mark found"}</button></div></div></div>`;}).join("")}</div>`;
+}
+/* check-in feed: organisers only (the database never sends other teams' visits to players) */
+function adminFeed(){
+  const f=S.actTeam, list=allVisits().filter(v=>!f||v.team===f).slice(0,150);
+  const rows=list.map(v=>{const t=teamOr(v.team), p=pubById(v.pub), n=visitsOf(v.team).findIndex(x=>x.pub===v.pub)+1, sf=selfieFor(v.team,v.pub), u=signedUrl(sf);
+    return `<div class="trow act ${v.at>(S.prevSeen||S.seenAt)?"new":""}">${dot(t.color,14)}
+      <div style="min-width:0"><b>${esc(t.name)}</b> <span class="sm">at ${esc(p?p.name:"?")}</span><div class="sm muted">Pub ${n} · ${hhmm(v.at)} · ${agoSpan(v.at)}</div></div>
+      ${sf?`<button class="sthumb" data-action="viewselfie" data-team="${v.team}" data-pub="${v.pub}" aria-label="View selfie">${u?`<img src="${esc(u)}" alt="">`:""}</button>`:"<span></span>"}</div>`;}).join("");
+  return `<div class="card"><div class="row"><h2>Check-ins</h2><span class="spacer"></span><select id="actteam" aria-label="Filter by team" style="width:auto">
+      <option value="">All teams</option>${hunters().map(t=>`<option value="${t.id}" ${f===t.id?"selected":""}>${esc(teamLabel(t))}</option>`).join("")}</select></div>
+    ${rows||'<p class="sm muted">No check-ins yet.</p>'}</div>`;
+}
+
+/* ---- Setup ---- */
+function adminSetup(){
   const st=D.settings.state, sw=(id,on,label,help)=>`<label class="switch" for="${id}"><input type="checkbox" id="${id}" data-setting="${id.replace("set-","")}" ${on?"checked":""}><span class="track"><span class="knob"></span></span><span><b>${label}</b><span class="sm muted" style="display:block">${help}</span></span></label>`;
-  return `<div class="card"><h2>Game state</h2>
-      <div class="statebar">${[["setup","Not started","Players can join teams. No check-ins yet."],["live","Live","Check-ins and evidence are open."],["finished","Finished","Check-ins close. Scores and the selfie gallery are revealed to everyone."]].map(([k,l,hlp])=>
-        `<button type="button" class="statebtn ${st===k?"on":""}" data-action="setstate" data-k="${k}" aria-pressed="${st===k}"><b>${l}</b><span class="sm">${hlp}</span></button>`).join("")}</div></div>
-    <div class="card"><h2>What teams can see</h2><p class="sm muted">Each team only ever sees its own check-ins. Only organisers see where every team is.</p>
+  const byTeam={}; D.members.forEach(m=>(byTeam[m.team_id]=byTeam[m.team_id]||[]).push(m));
+  return `<div class="card"><h2>Game</h2>
+      <div class="statebar">${[["setup","Not started","Players can join teams. No check-ins yet."],["live","Live","Check-ins and evidence are open."],["finished","Finished","Check-ins close. Scores and selfies are revealed."]].map(([k,l,hlp])=>
+        `<button type="button" class="statebtn ${st===k?"on":""}" data-action="setstate" data-k="${k}" aria-pressed="${st===k}"><b>${l}</b><span class="sm">${hlp}</span></button>`).join("")}</div>
       ${sw("set-showBoard",D.settings.showBoard===true,"Show the leaderboard during the game","Off: scores are revealed when you finish the game.")}</div>
     <div class="card"><h2>Settings</h2>
       <div class="grid2" style="gap:12px">
@@ -771,68 +790,64 @@ function adminGame(){
         <div class="field"><label for="set-start">Start time at ${esc(CONFIG.meetPub)}</label><input type="text" id="set-start" value="${esc(D.settings.start||"")}" placeholder="e.g. Sat 6 Dec, 2pm"></div>
         <div class="field"><label for="set-int">Challenge every how many pubs?</label><input type="number" id="set-int" min="1" max="6" value="${D.interval}"></div>
       </div>
-      <button class="btn primary" data-action="savesettings">Save settings</button></div>
-    <div class="card"><h2>Organisers</h2><p class="sm muted">Emails that can sign in to Chicken HQ. Each one also needs an account: Supabase → Authentication → Users → Add user (tick Auto Confirm).</p>
-      ${S.mode==="local"?'<p class="sm muted">Connect Supabase to manage organisers.</p>':R.admins.map(e=>`<div class="trow"><span class="dot" style="background:var(--yolk)"></span><span class="sm">${esc(e)}${e===S.me.email?" (you)":""}</span>${e===S.me.email?"<span></span>":`<button class="btn sm ghost danger" data-action="deladmin" data-id="${esc(e)}">Remove</button>`}</div>`).join("")}
-      ${S.mode==="local"?"":`<div class="row"><input type="text" id="adminq" inputmode="email" autocomplete="off" autocapitalize="off" placeholder="friend@example.com" aria-label="Organiser email" style="flex:1;min-width:180px"><button class="btn" data-action="addadmin">Add</button></div>`}</div>
-    ${S.mode==="local"?'<div class="card"><h2>Demo data</h2><p class="sm muted">Clears everything saved on this device.</p><div><button class="btn danger" data-action="resetdemo">Reset demo</button></div></div>':""}`;
-}
-function adminTeams(){
-  const byTeam={}; D.members.forEach(m=>(byTeam[m.team_id]=byTeam[m.team_id]||[]).push(m));
-  return `<div class="card"><h2>Live progress</h2>${hunters().map(t=>{const n=(D.unlocked[t.id]||[]).length, f=D.found[t.id];
-    return `<div class="trow" style="grid-template-columns:auto 1fr;align-items:start"><span class="dot" style="background:${t.color};width:14px;height:14px;margin-top:4px"></span>
-      <div style="display:grid;gap:8px;min-width:0"><div class="row"><b>Team ${t.num??""} · ${esc(t.name)}</b><span class="sm muted">${visitsOf(t.id).length} pubs · ${n} clues · ${visitsOf(t.id).filter(v=>selfieFor(t.id,v.pub)).length}/${visitsOf(t.id).length} selfies</span></div>
-      ${lastSeenLine(t.id)}
-      <div class="row" style="gap:6px"><button class="btn sm" data-action="unlock" data-team="${t.id}">Unlock clue ${n+1}</button>
-        ${n?`<button class="btn sm ghost" data-action="relock" data-team="${t.id}">Re-lock clue ${n}</button>`:""}
-        <button class="btn sm ${f?"":"good"}" data-action="found" data-team="${t.id}">${f?"Undo found":"Mark found"}</button>
-        <button class="btn sm ghost" data-action="viewas" data-team="${t.id}">Preview</button></div></div></div>`;}).join("")}</div>
-    <div class="card"><h2>Players</h2><p class="sm muted">Phones that have joined a team. Move someone who joined the wrong team, or remove them so they can join again.</p>
-      ${D.members.length?hunters().map(t=>(byTeam[t.id]||[]).length?`<div class="lbl" style="margin-top:6px">Team ${t.num??""} · ${esc(t.name)}</div>${byTeam[t.id].map(m=>`<div class="trow"><span class="dot" style="background:${t.color}"></span><div style="min-width:0"><b>${esc(m.display_name||"Unnamed phone")}</b><div class="sm muted">Joined ${ago(m.joined_at)}</div></div>
-        <div class="row" style="gap:6px"><select data-move="${esc(m.user_id)}" aria-label="Move player">${hunters().map(x=>`<option value="${x.id}" ${x.id===t.id?"selected":""}>Team ${x.num??""}</option>`).join("")}</select><button class="btn sm ghost danger" data-action="kick" data-user="${esc(m.user_id)}">Remove</button></div></div>`).join("")}`:"").join(""):'<p class="sm muted">Nobody has joined yet.</p>'}</div>
+      <div><button class="btn primary" data-action="savesettings">Save settings</button></div></div>
+    ${adminKitty()}
     <div class="card"><div class="row"><h2>Teams</h2><span class="spacer"></span><button class="btn sm" data-action="addteam">Add team</button></div>
       <p class="sm muted">The first team is the chicken. The rest are numbered 1, 2, 3… in this order, and that number is how players join. Member names: one per line or separated by commas.</p>
-      ${D.teams.map((t,i)=>`<div class="chalrow"><div class="row"><span class="pill ${t.chicken?"yolk":""}" style="min-width:64px;justify-content:center">${t.chicken?"Chicken":"Team "+i}</span><input type="text" id="tn-${i}" value="${esc(t.name)}" style="flex:1;min-width:150px" aria-label="Team name">
+      ${D.teams.map((t,i)=>`<div class="chalrow"><div class="row"><span class="pill" style="min-width:64px;justify-content:center">${t.chicken?"Chicken":"Team "+i}</span><input type="text" id="tn-${i}" value="${esc(t.name)}" style="flex:1;min-width:150px" aria-label="Team name">
           <select id="tc-${i}" style="width:auto" aria-label="Team colour">${PALETTE.concat(PALETTE.includes(t.color)?[]:[t.color]).map(c=>`<option value="${c}" ${c===t.color?"selected":""}>${c}</option>`).join("")}</select>
-          <span class="dot" style="background:${t.color};width:20px;height:20px"></span>${t.chicken?"":`<button class="btn sm ghost danger" data-action="delteam" data-id="${t.id}">Remove</button>`}</div>
+          ${dot(t.color,20)}${t.chicken?"":`<button class="btn sm ghost danger" data-action="delteam" data-id="${t.id}">Remove</button>`}</div>
         <textarea id="tm-${i}" aria-label="${esc(t.name)} members">${esc(t.members.join(", "))}</textarea></div>`).join("")}
-      <button class="btn primary" data-action="saveteams">Save teams</button></div>`;
+      <div><button class="btn primary" data-action="saveteams">Save teams</button></div></div>
+    <div class="card"><h2>Players</h2><p class="sm muted">Phones that have joined a team. Move someone who joined the wrong team, or remove them so they can join again.</p>
+      ${D.members.length?hunters().map(t=>(byTeam[t.id]||[]).length?`<div class="lbl" style="margin-top:6px">${esc(teamLabel(t))}</div>${byTeam[t.id].map(m=>`<div class="trow">${dot(t.color)}<div style="min-width:0"><b>${esc(m.display_name||"Unnamed phone")}</b><div class="sm muted">Joined ${ago(m.joined_at)}</div></div>
+        <div class="row" style="gap:6px"><select data-move="${esc(m.user_id)}" aria-label="Move player" style="width:auto">${hunters().map(x=>`<option value="${x.id}" ${x.id===t.id?"selected":""}>Team ${x.num??""}</option>`).join("")}</select><button class="btn sm ghost danger" data-action="kick" data-user="${esc(m.user_id)}">Remove</button></div></div>`).join("")}`:"").join(""):'<p class="sm muted">Nobody has joined yet.</p>'}</div>
+    ${S.mode==="local"?'<div class="card"><h2>Demo data</h2><p class="sm muted">Clears everything saved on this device.</p><div><button class="btn danger" data-action="resetdemo">Reset demo</button></div></div>'
+      :`<div class="card"><h2>Organisers</h2><p class="sm muted">Emails that can sign in to Chicken HQ. Each one also needs an account: Supabase → Authentication → Users → Add user (tick Auto Confirm).</p>
+      ${R.admins.map(e=>`<div class="trow">${dot("var(--yolk)")}<span class="sm">${esc(e)}${e===S.me.email?" (you)":""}</span>${e===S.me.email?"<span></span>":`<button class="btn sm ghost danger" data-action="deladmin" data-id="${esc(e)}">Remove</button>`}</div>`).join("")}
+      <div class="row"><input type="text" id="adminq" inputmode="email" autocomplete="off" autocapitalize="off" placeholder="friend@example.com" aria-label="Organiser email" style="flex:1;min-width:180px"><button class="btn" data-action="addadmin">Add</button></div></div>`}`;
 }
+
+/* ---- Content ---- */
+function adminContent(){ return adminClues()+adminChallenges()+adminRules(); }
 function adminClues(){
   const H=pubById(D.secret.hideout), clues=D.secret.clues.length?D.secret.clues:["","","","",""];
   return `<div class="card"><h2>Hideout</h2><p class="sm muted">Only organisers can see this. Automatic clues are worked out from it.</p>
       <select id="hideout"><option value="">Not chosen yet</option>${PUBS.map(p=>`<option value="${p.id}" ${D.secret.hideout===p.id?"selected":""}>${esc(p.name)} · ${fmtMi(p.d)}</option>`).join("")}</select>
-      ${H?`<span class="pill yolk">Hiding at ${esc(H.name)}</span>`:""}</div>
+      ${H?`<span class="sm">Hiding at <b>${esc(H.name)}</b></span>`:""}</div>
     <div class="card"><div class="row"><h2>Clues, in order</h2><span class="spacer"></span><button class="btn sm" data-action="addclue">Add clue</button></div>
-      <p class="sm muted">Each approved challenge unlocks the next clue for that team. Leave one blank and the app writes it automatically from the team's location and your hideout.</p>
+      <p class="sm muted">Each approved challenge unlocks the next clue for that team. Leave one blank and the app writes it from the team's location and your hideout.</p>
       ${clues.map((c,i)=>`<div class="clueedit"><span class="n">${i+1}</span><div class="field"><textarea data-clue="${i}" aria-label="Clue ${i+1}" placeholder="Auto: ${esc(autoClue(i,null))}">${esc(c)}</textarea></div><button class="btn sm ghost" data-action="delclue" data-i="${i}" aria-label="Remove clue ${i+1}">Remove</button></div>`).join("")}
-      <button class="btn primary" data-action="saveclues">Save clues</button></div>`;
+      <div><button class="btn primary" data-action="saveclues">Save clues</button></div></div>`;
 }
+/* every pub folds away; only the one being edited is open */
 function adminChallenges(){
   const q=(S.cq||"").toLowerCase(), list=PUBS.filter(p=>!q||p.name.toLowerCase().includes(q));
   const all=D.challenges._all||{}, setN=PUBS.filter(p=>{const c=D.challenges[p.id];return c&&(c.title||c.text);}).length;
   return `<div class="card"><h2>Default challenge</h2><p class="sm muted">Used at any challenge pub that doesn't have its own. Teams only see a challenge once they reach that challenge pub.</p>
       <div class="field"><label for="ch-_all-t">Title</label><input type="text" id="ch-_all-t" value="${esc(all.title||"")}" placeholder="e.g. Pub selfie"></div>
       <div class="field"><label for="ch-_all-x">What they have to do</label><textarea id="ch-_all-x" placeholder="e.g. Get a selfie with the bar staff">${esc(all.text||"")}</textarea></div>
-      <button class="btn primary" data-action="savechal" data-pub="_all">Save default</button></div>
-    <div class="card"><div class="row"><h2>Pubs</h2><span class="spacer"></span><span class="pill">${setN} of ${PUBS.length} challenges set</span></div>
+      <div><button class="btn primary" data-action="savechal" data-pub="_all">Save default</button></div></div>
+    <div class="card"><div class="row"><h2>Pubs</h2><span class="spacer"></span><span class="sm muted">${setN} of ${PUBS.length} have their own challenge</span></div>
       <input type="search" id="chalq" placeholder="Find a pub" value="${esc(S.cq||"")}" aria-label="Find a pub">
-      ${list.map(p=>{const c=D.challenges[p.id]||{}, pi=D.pubinfo[p.id]||{};return `<div class="chalrow"><div class="row"><b>${esc(p.name)}</b><span class="sm muted">${fmtMi(p.d)}</span><span class="spacer"></span>${c.title||c.text?'<span class="pill good">Set</span>':""}</div>
+      <div>${list.map(p=>{const c=D.challenges[p.id]||{}, pi=D.pubinfo[p.id]||{};
+        return `<details class="pubedit" data-pub="${p.id}" ${S.openPub===p.id?"open":""}><summary><b>${esc(p.name)}</b><span class="sm muted">${fmtMi(p.d)}</span><span class="spacer"></span>${c.title||c.text?'<span class="pill good">Challenge</span>':""}</summary>
+        <div class="chalrow">
         <input type="text" id="ch-${p.id}-t" value="${esc(c.title||"")}" placeholder="Challenge title" aria-label="${esc(p.name)} challenge title">
         <textarea id="ch-${p.id}-x" placeholder="What they have to do" aria-label="${esc(p.name)} challenge">${esc(c.text||"")}</textarea>
         <div class="pinfo"><div class="field"><label for="pi-${p.id}-p">Average pint</label><input type="text" id="pi-${p.id}-p" value="${esc(pi.price||"")}" placeholder="e.g. 6.40"></div>
           <div class="field"><label for="pi-${p.id}-h">Opening hours${p.hours?" (from OpenStreetMap)":""}</label><input type="text" id="pi-${p.id}-h" value="${esc(pi.hours||"")}" placeholder="${esc(p.hours||"e.g. Mo-Th 12:00-23:00; Fr-Sa 12:00-00:00; Su 12:00-22:30")}"></div></div>
         <input type="text" id="pi-${p.id}-n" value="${esc(pi.note||"")}" placeholder="Note for players, e.g. Pool table upstairs" aria-label="${esc(p.name)} note">
-        <div><button class="btn sm primary" data-action="savechal" data-pub="${p.id}">Save</button></div></div>`;}).join("")}</div>`;
+        <div><button class="btn sm primary" data-action="savechal" data-pub="${p.id}">Save</button></div></div></details>`;}).join("")}</div></div>`;
 }
 function adminRules(){
   const rules=rulesList(), house=houseList();
-  return `<div class="card"><div class="row"><h2>Classic rules</h2><span class="spacer"></span><button class="btn sm" data-action="addrule">Add rule</button></div>
+  return `<div class="card"><div class="row"><h2>Rules</h2><span class="spacer"></span><button class="btn sm" data-action="addrule">Add rule</button></div>
       <p class="sm muted">Shown in order on the Rules tab.</p>
       ${rules.map((r,i)=>`<div class="chalrow"><div class="row"><span class="pill">${i+1}</span><input type="text" data-rule-t="${i}" value="${esc(r.t)}" style="flex:1;min-width:160px" aria-label="Rule ${i+1} title"><button class="btn sm ghost danger" data-action="delrule" data-i="${i}">Remove</button></div>
-        <textarea data-rule-b="${i}" aria-label="Rule ${i+1} detail">${esc(r.b)}</textarea></div>`).join("")}</div>
-    <div class="card"><h2>House rules</h2><p class="sm muted">One per line.</p><textarea id="houserules" style="min-height:160px">${esc(house.join("\n"))}</textarea></div>
-    <div class="row"><button class="btn primary" data-action="saverules">Save rules</button><button class="btn ghost" data-action="resetrules">Restore the original rules</button></div>`;
+        <textarea data-rule-b="${i}" aria-label="Rule ${i+1} detail">${esc(r.b)}</textarea></div>`).join("")}
+      <div class="field"><label for="houserules">House rules, one per line</label><textarea id="houserules" style="min-height:160px">${esc(house.join("\n"))}</textarea></div>
+      <div class="row"><button class="btn primary" data-action="saverules">Save rules</button><button class="btn ghost" data-action="resetrules">Restore the original rules</button></div></div>`;
 }
 
 /* =================== actions =================== */
@@ -871,12 +886,6 @@ function readTeams(){
 }
 function readRules(){return Array.from(document.querySelectorAll("[data-rule-t]")).map(el=>({t:el.value.trim(),b:(document.querySelector(`[data-rule-b="${el.dataset.ruleT}"]`)||{}).value||""})).filter(r=>r.t||r.b.trim());}
 const saveSettings=patch=>act(()=>api.saveSettings(Object.assign({},R.settings,patch)));
-function viewAsSheet(){
-  return `<div class="row"><h2>Preview a team</h2><span class="spacer"></span><button class="btn sm ghost" data-action="closesheet">Close</button></div>
-    <p class="muted sm">See the Play tab exactly as that team does.</p>
-    <div class="teampick">${hunters().map(t=>`<button type="button" data-action="viewas" data-team="${t.id}"><span class="sw" style="background:${t.color}"></span><b>Team ${t.num??""} · ${esc(t.name)}</b></button>`).join("")}</div>
-    ${S.viewAs?'<button class="btn block" data-action="stopview">Stop preview</button>':""}`;
-}
 
 document.addEventListener("click",async e=>{
   const a=e.target.closest("[data-action]"); if(!a) return;
@@ -885,7 +894,8 @@ document.addEventListener("click",async e=>{
   if(act_==="pickfiles"||act_==="pickselfie"||act_==="note") return;
   e.preventDefault();
   try{ switch(act_){
-    case "jointeam": location.hash="play"; renderAll(); setTimeout(()=>{const n=document.getElementById("joinnum"); if(n) n.focus();},50); break;
+    case "menu": openSheet(accountSheet()); break;
+    case "jointeam": closeSheet(); location.hash="play"; renderAll(); setTimeout(()=>{const n=document.getElementById("joinnum"); if(n) n.focus();},50); break;
     case "dojoin": {
       const num=parseInt((document.getElementById("joinnum")||{}).value,10), name=((document.getElementById("joinname")||{}).value||"").trim();
       if(!num){toast("Type your team number.");break;}
@@ -893,8 +903,8 @@ document.addEventListener("click",async e=>{
       try{ const t=await act(()=>api.join(num,name)); toast(`You're on ${(teamById(t)||{}).name||"your team"}. Allez!`); }
       catch(err){ a.disabled=false; a.textContent="Join team"; }
       break; }
-    case "viewas": if(a.dataset.team){ S.viewAs=a.dataset.team; S.chal={}; closeSheet(); location.hash="play"; renderAll(); } else openSheet(viewAsSheet()); break;
-    case "stopview": S.viewAs=null; S.chal={}; closeSheet(); renderAll(); break;
+    case "viewas": S.viewAs=a.dataset.team; S.chal={}; closeSheet(); location.hash="play"; renderAll(); break;
+    case "stopview": S.viewAs=null; S.chal={}; closeSheet(); if(organiserOnly()) location.hash="admin"; renderAll(); break;
     case "checkin": if(!myTeamId()){location.hash="play";break;} openSheet(checkinSheet("")); break;
     case "confirmcheckin": {
       const tid=myTeamId(); if(!tid){toast("Join a team first.");break;}
@@ -910,8 +920,7 @@ document.addEventListener("click",async e=>{
     case "undovisit": { const tid=myTeamId(), pub=a.dataset.pub, sf=selfieFor(tid,pub);
       await act(async()=>{ if(sf) await api.deleteSelfie(tid,pub,sf.path); await api.undoVisit(tid,pub); },"Check-in removed.").catch(()=>{}); break; }
     case "viewselfie": openSheet(selfieViewSheet(a.dataset.team,a.dataset.pub)); break;
-    case "galby": S.galBy=a.dataset.k; renderView("gallery"); break;
-    case "gokitty": S.adminTab="kitty"; location.hash="admin"; renderAll(); break;
+    case "galby": S.galBy=a.dataset.k; renderView("teams"); break;
     case "spend": openSheet(spendSheet()); break;
     case "dospend": { const amt=parseMoney(document.getElementById("spend-amt").value), note=document.getElementById("spend-note").value.trim();
       if(!(amt>0)||amt>=10000){ toast("Enter the amount, e.g. 42.50"); break; }
@@ -921,13 +930,12 @@ document.addEventListener("click",async e=>{
     case "savekitty": { const v=parseMoney(document.getElementById("kitty-total").value);
       if(!(v>=0)){ toast("Enter the kitty total, e.g. 240"); break; }
       await saveSettings({budget:v}).then(()=>toast(`Kitty set to ${money(v)}.`)).catch(()=>{}); break; }
-    case "openchal": openSheet(`<div class="row"><span class="spacer"></span><button class="btn sm ghost" data-action="closesheet">Close</button></div>${challengeCard(myTeamId(),a.dataset.pub,+a.dataset.i)}`); break;
+    case "openchal": challengeSheet(myTeamId(),a.dataset.pub,+a.dataset.i); break;
     case "submit": submitEvidence(a.dataset.team,a.dataset.pub,+a.dataset.i); break;
     case "fit": fitAll(); break;
-    case "gostart": if(LM){LM.flyTo([START.lat,START.lng],17);pubMarkers[START.id].openPopup();} break;
     case "focuspub": { const p=pubById(a.dataset.pub); S.selPub=p.id; renderPubList(); stylePubs(); if(LM){LM.flyTo([p.lat,p.lng],Math.max(LM.getZoom(),16.5));setTimeout(()=>pubMarkers[p.id].openPopup(),350);}
       if(matchMedia("(max-width:900px)").matches) document.querySelector(".mapbox").scrollIntoView({behavior:"smooth",block:"start"}); break; }
-    case "atab": S.adminTab=a.dataset.k; if(S.adminTab==="activity") markSeen(); renderAll(); break;
+    case "atab": S.adminTab=a.dataset.k; if(S.adminTab==="live") markSeen(); renderAll(); break;
     case "approve": { const s=D.subs.find(x=>x._id===a.dataset.id); if(!s) break; a.disabled=true; const n=(D.unlocked[s.team]||[]).length;
       await act(()=>api.approve(s._id,autoClue(n,pubById(s.pub))),r=>`Clue ${r||n+1} unlocked for ${(teamById(s.team)||{}).name}.`).catch(()=>{}); break; }
     case "reject": { const r=document.getElementById("rej-"+a.dataset.id); await act(()=>api.reject(a.dataset.id,r?r.value.trim():""),"Sent back to the team.").catch(()=>{}); break; }
@@ -965,7 +973,7 @@ document.addEventListener("click",async e=>{
     case "resetrules": await saveSettings({rules:null,house:null}).then(()=>toast("Original rules restored.")).catch(()=>{}); break;
     case "resetdemo": api.reset&&api.reset(); location.reload(); break;
     case "signin": openSheet(signinSheet()); break;
-    case "signout": S.viewAs=null; await sb.auth.signOut(); S.me={email:null,isAdmin:false,userId:null}; R.myTeam=null; location.hash="play"; await refresh(); toast("Signed out."); break;
+    case "signout": S.viewAs=null; closeSheet(); await sb.auth.signOut(); S.me={email:null,isAdmin:false,userId:null}; R.myTeam=null; location.hash="play"; await refresh(); toast("Signed out."); break;
     case "install": if(deferredInstall){ deferredInstall.prompt(); deferredInstall=null; renderAll(); } break;
     case "hideinstall": ls.set("noinstall",1); renderAll(); break;
   } }catch(err){ console.warn(err); }
@@ -999,22 +1007,25 @@ document.addEventListener("change",async e=>{
   else if(el.dataset.action==="pickfiles"){const dk=el.dataset.key, d=(S.draft[dk]=S.draft[dk]||{files:[],note:""});
     Array.from(el.files).slice(0,4).forEach(f=>d.files.push({file:f,type:f.type||"image/jpeg",preview:URL.createObjectURL(f)}));
     const [tid,pub]=dk.split("|"); const i=visitsOf(tid).findIndex(v=>v.pub===pub);
-    if(el.closest(".sheet")) openSheet(`<div class="row"><span class="spacer"></span><button class="btn sm ghost" data-action="closesheet">Close</button></div>${challengeCard(tid,pub,i)}`); else renderView("play");}
+    if(el.closest(".sheet")) challengeSheet(tid,pub,i); else renderView("play");}
   else if(el.id==="hideout"){ await saveSecret({hideout:el.value||null,clues:document.querySelector("[data-clue]")?readClues():D.secret.clues}).then(()=>toast(el.value?"Hideout set.":"Hideout cleared.")).catch(()=>{}); }
   else if(el.dataset.setting){ const k=el.dataset.setting, on=el.checked; await saveSettings({[k]:on}).then(()=>toast(on?"Switched on.":"Switched off.")).catch(()=>{}); }
   else if(el.dataset.move){ await act(()=>api.moveMember(el.dataset.move,el.value),"Player moved.").catch(()=>{}); }
 });
+/* remember which pub is open in HQ → Content, so a save or a live update doesn't fold it shut */
+document.addEventListener("toggle",e=>{const d=e.target; if(!d.matches||!d.matches("details.pubedit")) return;
+  if(d.open) S.openPub=d.dataset.pub; else if(S.openPub===d.dataset.pub) S.openPub=null;},true);
 document.addEventListener("mouseover",e=>{const r=e.target.closest&&e.target.closest(".pubrow[data-action=focuspub]"); if(!r||!LM||!HOVER) return;
   const m=pubMarkers[r.dataset.pub]; if(m&&m.openTooltip&&m.getTooltip()) m.openTooltip();});
 document.addEventListener("mouseout",e=>{const r=e.target.closest&&e.target.closest(".pubrow[data-action=focuspub]"); if(!r||!LM) return;
   if(r.contains(e.relatedTarget)) return; const m=pubMarkers[r.dataset.pub]; if(m&&m.closeTooltip) m.closeTooltip();});
 
 /* =================== render =================== */
-const VIEWS={play:viewPlay,teams:viewTeams,gallery:viewGallery,rules:viewRules,admin:viewAdmin};
+const VIEWS={play:viewPlay,teams:viewTeams,rules:viewRules,admin:viewAdmin};
 function renderView(k){ if(VIEWS[k]){const el=document.getElementById("v-"+k); el.innerHTML=VIEWS[k](); } }
 function renderAll(){
   if(!D.teams) derive();
-  if(route()==="admin"&&S.adminTab==="activity"&&document.visibilityState==="visible"&&unseenCount()) markSeen();
+  if(route()==="admin"&&S.adminTab==="live"&&document.visibilityState==="visible"&&unseenCount()) markSeen();
   renderChrome(); const r=route();
   if(r==="map"){ initMap(); if(LM) setTimeout(()=>LM.invalidateSize(),0); renderPubList(); renderMapDynamic(); }
   else { const a=document.activeElement, typing=a&&(a.tagName==="TEXTAREA"||(a.tagName==="INPUT"&&!["file","checkbox"].includes(a.type))||a.tagName==="SELECT")&&document.getElementById("v-"+r).contains(a);
@@ -1039,7 +1050,7 @@ function organiserAlert(table,payload){
   const r=payload.new; if(r.by_user&&r.by_user===S.me.userId) return;
   const t=teamById(r.team_id), p=pubById(r.pub_id); if(!t) return;
   let msg="";
-  if(table==="visits"&&payload.eventType==="INSERT") msg=`Team ${t.num??""} · ${t.name} checked in to ${p?p.name:"a pub"}`;
+  if(table==="visits"&&payload.eventType==="INSERT") msg=`${teamLabel(t)} checked in to ${p?p.name:"a pub"}`;
   else if(table==="selfies"&&(payload.eventType==="INSERT"||payload.eventType==="UPDATE")) msg=`📸 ${t.name} ${payload.eventType==="UPDATE"?"retook their":"added a"} selfie at ${p?p.name:"a pub"}`;
   if(!msg) return;
   toast(msg,6000);
