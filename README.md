@@ -27,6 +27,10 @@ python3 -m http.server 8080 --directory web
 Then open http://localhost:8080. Without Supabase details in `config.js`, the app runs in demo mode
 and saves to the browser only, with Chicken HQ open.
 
+Organisers use the team pill in the top bar to sign in or out and to preview what a team sees. Chicken HQ has three tabs:
+**Live** (evidence to review, the team board, check-ins and the kitty), **Setup** (game state, settings, kitty total, teams, players, organisers)
+and **Content** (hideout and clues, challenges and pub info, rules).
+
 ## Who can do what
 
 Players join on their phone by typing their team number (1, 2, 3 …). Organisers sign in with email and password.
@@ -39,7 +43,7 @@ Players join on their phone by typing their team number (1, 2, 3 …). Organiser
 | Hideout and clue list | | ✗ | ✗ | ✓ |
 | Approve evidence, unlock clues, mark found | | ✗ | ✗ | ✓ |
 | Kitty (total, what's left, rounds bought) | ✓ | ✓ | ✓ | ✓ + log rounds |
-| Team selfies (one per pub) | | ✓ add, retake | after the game, in the Gallery | ✓ |
+| Team selfies (one per pub) | | ✓ add, retake | after the game, on the Teams tab | ✓ |
 | Where other teams are (map, last check-in) | | ✗ | ✗ | ✓ + live alerts |
 | Leaderboard | | organiser's switch | organiser's switch | ✓ |
 | Move or remove players, edit teams, rules, settings, game state | | ✗ | ✗ | ✓ |
@@ -48,10 +52,10 @@ All of this is enforced by row-level security in the database (`supabase/schema.
 Evidence and selfies live in private storage buckets with one folder per team, and are shown through links that expire after an hour.
 Selfies open to every player who joined a team once an organiser sets the game to **Finished**.
 
-The kitty card on the Play tab counts down for everyone. Organisers set the total in Chicken HQ → **Kitty** and tap **Bought a round** to take each round off it.
+The kitty card on the Play tab counts down for everyone. Organisers set the total in Chicken HQ → **Setup** and tap **Bought a round** on Chicken HQ → **Live** to take each round off it.
 Spends have no pub attached, so the log can't give away the hideout.
 
-Organisers get a pop-up on their phone whenever a team checks in or adds a selfie, while the app is open. Chicken HQ → **Activity** lists every check-in
+Organisers get a pop-up on their phone whenever a team checks in or adds a selfie, while the app is open. Chicken HQ → **Live** lists every check-in
 and shows when each team last checked in. A team turns amber after 45 minutes without a check-in.
 
 ## Data credits
