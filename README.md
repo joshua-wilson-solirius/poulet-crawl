@@ -35,6 +35,10 @@ and **Content** (hideout and clues, challenges and pub info, rules).
 
 Players join on their phone by typing their team number (1, 2, 3 …). Organisers sign in with email and password.
 
+Teams lock when the game goes **Live**. A phone joining after that sends a request instead, and gets no access until an organiser taps
+**Let in** on Chicken HQ → **Live** (where they can also pick a different team, or decline). Players can never switch team themselves;
+organisers can move or remove anyone at any time from Chicken HQ → **Setup**.
+
 | | Visitor | Player (own team) | Player (other teams) | Organiser |
 |---|---|---|---|---|
 | Rules, pubs, team names | ✓ | ✓ | ✓ | ✓ + edit |
@@ -46,6 +50,7 @@ Players join on their phone by typing their team number (1, 2, 3 …). Organiser
 | Team selfies (one per pub) | | ✓ add, retake | after the game, on the Teams tab | ✓ |
 | Where other teams are (map, last check-in) | | ✗ | ✗ | ✓ + live alerts |
 | Leaderboard | | organiser's switch | organiser's switch | ✓ |
+| Join a team | before the game is live; after that, by request | already joined | ✗ | ✓ approve, move or remove |
 | Move or remove players, edit teams, rules, settings, game state | | ✗ | ✗ | ✓ |
 
 All of this is enforced by row-level security in the database (`supabase/schema.sql`), not just hidden in the app.

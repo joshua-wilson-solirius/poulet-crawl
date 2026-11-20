@@ -5,6 +5,7 @@
 --   Organiser  signed in with email + password, and that email is in public.admins. Sees and changes everything.
 --   Player     anonymous sign-in on their phone, then joins a team by its number (1, 2, 3 …).
 --              Sees only their own team's check-ins, evidence and clues.
+--              Teams lock when the game goes live: a phone joining after that waits for an organiser to approve it.
 --   Visitor    not joined yet. Sees rules, settings, team names and pub info only.
 --
 -- Before running: Authentication → Sign In / Providers → turn on "Allow anonymous sign-ins".
@@ -41,8 +42,10 @@ create table if not exists public.team_members (  -- which phone (anonymous user
   user_id      uuid primary key references auth.users(id) on delete cascade,
   team_id      text not null references public.teams(id) on delete cascade,
   display_name text,
-  joined_at    timestamptz not null default now()
+  joined_at    timestamptz not null default now(),
+  approved     boolean not null default true      -- false = asked to join after the game went live; no access until an organiser approves
 );
+alter table public.team_members add column if not exists approved boolean not null default true;
 
 create table if not exists public.pub_info (pub_id text primary key, price text, hours text, note text);
 create table if not exists public.challenges (pub_id text primary key, title text, body text);  -- '_all' = default
@@ -149,9 +152,10 @@ language sql stable security definer set search_path = public as $$
   );
 $$;
 
+-- A phone's team, once approved. A pending join request gives no access to anything.
 create or replace function public.my_team() returns text
 language sql stable security definer set search_path = public as $$
-  select team_id from public.team_members where user_id = auth.uid();
+  select team_id from public.team_members where user_id = auth.uid() and approved;
 $$;
 
 create or replace function public.setting(k text) returns text
@@ -162,17 +166,20 @@ $$;
 -- ---------------------------------------------------------------
 -- Player functions
 -- ---------------------------------------------------------------
+-- Before the game: join straight away. Once it's live (or finished) teams are locked, so a new phone's
+-- join becomes a request (approved = false) that an organiser approves in Chicken HQ.
+-- Players can never switch team themselves; organisers move or remove them.
 create or replace function public.join_team(p_num int, p_name text default null) returns text
 language plpgsql security definer set search_path = public as $$
-declare v_team text; v_cur text;
+declare v_team text; v_cur text; v_open boolean := coalesce(nullif(public.setting('state'), ''), 'setup') = 'setup';
 begin
   if auth.uid() is null then raise exception 'not_signed_in'; end if;
   select id into v_team from public.teams where num = p_num and not is_chicken;
   if v_team is null then raise exception 'no_such_team'; end if;
   select team_id into v_cur from public.team_members where user_id = auth.uid();
   if v_cur is not null and v_cur <> v_team then raise exception 'already_in_team'; end if;
-  insert into public.team_members (user_id, team_id, display_name)
-  values (auth.uid(), v_team, nullif(trim(p_name), ''))
+  insert into public.team_members (user_id, team_id, display_name, approved)
+  values (auth.uid(), v_team, nullif(trim(p_name), ''), v_open)
   on conflict (user_id) do update set display_name = coalesce(excluded.display_name, public.team_members.display_name);
   return v_team;
 end $$;

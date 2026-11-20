@@ -125,7 +125,7 @@ function errText(e){const m=(e&&(e.message||e.error_description||e.msg))||String
 
 /* =================== raw data (what this phone is allowed to see) =================== */
 const R = {settings:{}, teams:[], rosters:{}, members:[], pubinfo:{}, challenges:{}, secret:{hideout:null,clues:[]},
-           visits:[], subs:[], selfies:[], spends:[], unlocked:[], found:[], positions:[], board:[], admins:[], myTeam:null};
+           visits:[], subs:[], selfies:[], spends:[], unlocked:[], found:[], positions:[], board:[], admins:[], myTeam:null, waiting:null};
 const S = {mode:"connecting", loaded:false, me:{email:null,isAdmin:false,userId:null}, adminTab:"live", q:"", cq:"", openPub:null, selPub:null, draft:{},
            chal:{}, viewAs:null, signed:{}, galBy:"team", actTeam:"", seenAt:ls.get("seenAct")||Date.now(), selfieBusy:null};
 
@@ -173,6 +173,9 @@ const unseenCount=()=>isAdmin()&&S.mode==="db"?allVisits().filter(v=>v.at>S.seen
 function markSeen(){ S.prevSeen=S.seenAt; S.seenAt=Date.now(); ls.set("seenAct",S.seenAt); }
 const foundOrder=()=>hunters().filter(t=>D.found[t.id]).sort((a,b)=>D.found[a.id].at-D.found[b.id].at).map(t=>t.id);
 const pending=()=>D.subs.filter(s=>s.status==="pending");
+/* phones that asked to join after the game went live, waiting for an organiser */
+const joinRequests=()=>D.members.filter(m=>m.approved===false);
+const hqCount=()=>pending().length+joinRequests().length+unseenCount();
 const live=()=>D.settings.state==="live";
 const boardOpen=()=>isAdmin()||D.settings.showBoard===true||D.settings.state==="finished";
 const ordinal=i=>["1st","2nd","3rd","4th","5th","6th","7th","8th"][i]||(i+1)+"th";
@@ -228,7 +231,8 @@ function SupabaseBackend(client){
       R.pubinfo={}; (out.pubinfo||[]).forEach(p=>R.pubinfo[p.pub_id]={price:p.price||"",hours:p.hours||"",note:p.note||""});
       R.rosters={}; (out.rosters||[]).forEach(r=>R.rosters[r.team_id]=r.names||[]);
       R.members=out.members||[];
-      const mine=R.members.find(m=>m.user_id===S.me.userId); R.myTeam=mine?mine.team_id:null;
+      const mine=R.members.find(m=>m.user_id===S.me.userId);
+      R.myTeam=mine&&mine.approved!==false?mine.team_id:null; R.waiting=mine&&mine.approved===false?mine.team_id:null;
       R.visits=out.visits||[]; R.subs=out.subs||[]; R.selfies=out.selfies||[]; R.spends=out.spends||[]; R.unlocked=out.unlocked||[]; R.found=out.found||[];
       R.positions=out.positions||[]; R.board=out.board||[];
       R.challenges={}; (out.challenges||[]).forEach(c=>R.challenges[c.pub_id]={title:c.title||"",text:c.body||""});
@@ -281,6 +285,7 @@ function SupabaseBackend(client){
     },
     deleteTeam:id=>q(client.from("teams").delete().eq("id",id)),
     moveMember:(user,team)=>q(client.from("team_members").update({team_id:team}).eq("user_id",user)),
+    approveMember:(user,team)=>q(client.from("team_members").update({team_id:team,approved:true}).eq("user_id",user)),
     removeMember:user=>q(client.from("team_members").delete().eq("user_id",user)),
     addAdmin:email=>q(client.from("admins").insert({email})),
     removeAdmin:email=>q(client.from("admins").delete().eq("email",email)),
@@ -299,13 +304,16 @@ function LocalBackend(){
     async load(){
       R.settings=db.settings; R.teams=db.teams; R.rosters=db.rosters; R.members=db.members; R.pubinfo=db.pubinfo; R.challenges=db.challenges;
       R.secret=db.secret; R.visits=db.visits; R.subs=db.subs; R.selfies=db.selfies; R.spends=db.spends; R.unlocked=db.unlocked; R.found=db.found; R.myTeam=db.myTeam; R.admins=[];
+      R.waiting=(db.members.find(m=>m.user_id==="me"&&m.approved===false)||{}).team_id||null;
       const pos={}; db.visits.forEach(v=>{ if(!pos[v.team_id]||ms(v.at)>ms(pos[v.team_id].at)) pos[v.team_id]=v; });
       R.positions=Object.values(pos);
       R.board=db.teams.filter(t=>!t.is_chicken).map(t=>({team_id:t.id,pubs:db.visits.filter(v=>v.team_id===t.id).length,clues:db.unlocked.filter(u=>u.team_id===t.id).length,found_at:(db.found.find(f=>f.team_id===t.id)||{}).at||null}));
     },
     async join(num,name){ const t=db.teams.find(x=>x.num===num&&!x.is_chicken); if(!t) throw new Error("no_such_team");
-      if(db.myTeam&&db.myTeam!==t.id) throw new Error("already_in_team"); db.myTeam=t.id;
-      db.members=db.members.filter(m=>m.user_id!=="me"); db.members.push({user_id:"me",team_id:t.id,display_name:name||null,joined_at:now()}); save(); return t.id; },
+      const cur=db.members.find(m=>m.user_id==="me"); if(cur&&cur.team_id!==t.id) throw new Error("already_in_team");
+      if(cur){ if(name) cur.display_name=name; save(); return t.id; }
+      const open=(db.settings.state||"setup")==="setup";   // teams lock once the game is live
+      db.members.push({user_id:"me",team_id:t.id,display_name:name||null,joined_at:now(),approved:open}); if(open) db.myTeam=t.id; save(); return t.id; },
     async checkIn(team,pub){ if((db.settings.state||"setup")!=="live") throw new Error("row-level security"); if(!db.visits.some(v=>v.team_id===team&&v.pub_id===pub)) db.visits.push({team_id:team,pub_id:pub,at:now()}); save(); },
     async undoVisit(team,pub){ const f=x=>!(x.team_id===team&&x.pub_id===pub); db.visits=db.visits.filter(f); db.selfies=db.selfies.filter(f); save(); },
     async getChallenge(pub){ const c=db.challenges[pub]; return c&&(c.title||c.text)?c:(db.challenges._all||{title:"",text:""}); },
@@ -331,7 +339,8 @@ function LocalBackend(){
     async savePubInfo(pub,i){ if(i) db.pubinfo[pub]=i; else delete db.pubinfo[pub]; save(); },
     async saveTeams(list){ db.teams=list.map(t=>({id:t.id,num:t.num,name:t.name,color:t.color,is_chicken:!!t.chicken,sort:t.sort})); list.forEach(t=>db.rosters[t.id]=t.members); save(); },
     async deleteTeam(id){ db.teams=db.teams.filter(t=>t.id!==id); delete db.rosters[id]; ["visits","subs","selfies","unlocked","found","members"].forEach(k=>db[k]=db[k].filter(x=>x.team_id!==id)); if(db.myTeam===id) db.myTeam=null; save(); },
-    async moveMember(user,team){ const m=db.members.find(x=>x.user_id===user); if(m) m.team_id=team; if(user==="me") db.myTeam=team; save(); },
+    async moveMember(user,team){ const m=db.members.find(x=>x.user_id===user); if(m) m.team_id=team; if(user==="me"&&m&&m.approved!==false) db.myTeam=team; save(); },
+    async approveMember(user,team){ const m=db.members.find(x=>x.user_id===user); if(m){ m.team_id=team; m.approved=true; } if(user==="me") db.myTeam=team; save(); },
     async removeMember(user){ db.members=db.members.filter(x=>x.user_id!==user); if(user==="me") db.myTeam=null; save(); },
     async addAdmin(){}, async removeAdmin(){},
     reset(){ ls.del(K); },
@@ -376,13 +385,13 @@ const navAllowed=k=>k==="admin"?isAdmin():k==="play"?!(organiserOnly()&&!S.viewA
 const home=()=>navAllowed("play")?"play":"admin";
 const route=()=>{let h=location.hash.slice(1); if(h==="gallery") h="teams"; return NAV.some(n=>n[0]===h)&&navAllowed(h)?h:home();};
 function renderChrome(){
-  const r=route(), items=NAV.filter(n=>navAllowed(n[0])), pc=isAdmin()?pending().length+unseenCount():0;
+  const r=route(), items=NAV.filter(n=>navAllowed(n[0])), pc=isAdmin()?hqCount():0;
   const badge=k=>k==="admin"&&pc?`<span class="cnt">${pc}</span>`:"";
   document.getElementById("toptabs").innerHTML=items.map(([k,l])=>`<a href="#${k}" ${r===k?'aria-current="page"':""}>${l}${badge(k)}</a>`).join("");
   document.getElementById("bottomnav").innerHTML=items.map(([k,l])=>`<a href="#${k}" ${r===k?'aria-current="page"':""}>${ICON[k]}<span>${l}</span>${badge(k)}</a>`).join("");
   const t=teamById(myTeamId()), pill=document.getElementById("teampill"), on=S.mode==="db"&&S.loaded;
   const sync=`<span class="sync ${on?"live":""}" title="${S.mode==="db"?(on?"Live":"Connecting…"):"Demo mode"}"></span>`;
-  pill.innerHTML=(t?`<span class="sw" style="background:${t.color}"></span>${esc(t.name)}${S.viewAs?" (preview)":""}`:organiserOnly()?"Organiser":"Join a team")+sync;
+  pill.innerHTML=(t?`<span class="sw" style="background:${t.color}"></span>${esc(t.name)}${S.viewAs?" (preview)":""}`:organiserOnly()?"Organiser":R.waiting?"Waiting…":"Join a team")+sync;
   NAV.forEach(([k])=>{document.getElementById("v-"+k).hidden=(k!==r);});
 }
 /* theme: follows the device unless this phone picks light or dark */
@@ -398,8 +407,9 @@ function accountSheet(){
     ${S.viewAs?'<button class="btn block" data-action="stopview">Stop preview</button>':""}
     ${themePicker()}
     <button class="btn block ghost danger" data-action="signout">Sign out</button>`;
-  return `${sheetHead(t?esc(t.name):"Join a team")}<p class="sm muted">${t?`You're on ${esc(teamLabel(t))}. `:""}${status}</p>
-    ${t?"":'<button class="btn primary block" data-action="jointeam">Join with your team number</button>'}
+  const w=!t&&teamById(R.waiting);
+  return `${sheetHead(t?esc(t.name):w?"Waiting to join":"Join a team")}<p class="sm muted">${t?`You're on ${esc(teamLabel(t))}. `:w?`You've asked to join ${esc(teamLabel(w))}. The chicken will let you in. `:""}${status}</p>
+    ${t||w?"":'<button class="btn primary block" data-action="jointeam">Join with your team number</button>'}
     ${S.me.email&&!S.me.isAdmin?`<div class="banner">${esc(S.me.email)} isn't on the organiser list.</div><button class="btn block" data-action="signout">Sign out</button>`
       :sb?'<button class="btn block ghost" data-action="signin">Organiser sign-in</button>':""}
     ${themePicker()}`;
@@ -414,11 +424,17 @@ function stateBanner(){
   return "";
 }
 function joinScreen(){
+  const w=teamById(R.waiting), locked=D.settings.state&&D.settings.state!=="setup";
+  if(w) return `<div><h1>Nearly there</h1><p class="muted" style="margin-top:6px">The game has started, so teams are locked.</p></div>
+    <div class="card"><div class="row">${dot(w.color,14)}<b>${esc(teamLabel(w))}</b></div>
+      <p>You've asked to join. The chicken will let you in, and this screen updates by itself.</p>
+      <p class="sm muted">Wrong team? Ask ${esc(CONFIG.hosts)} to move you.</p></div>
+    ${kittyCard()}`;
   return `<div><h1>Bonsoir! Which team are you?</h1><p class="muted" style="margin-top:6px">Type your team number. You only do this once on this phone.</p></div>
-    ${stateBanner()}
+    ${locked?`<div class="banner yolk">The game has started, so teams are locked. You can still ask to join, and the chicken will let you in.</div>`:stateBanner()}
     <div class="card"><div class="field"><label for="joinnum">Team number</label><input type="number" id="joinnum" inputmode="numeric" min="1" placeholder="e.g. 1" autocomplete="off" style="font-size:28px;font-weight:700;text-align:center"></div>
       <div class="field"><label for="joinname">Your name (optional)</label><input type="text" id="joinname" placeholder="So the chicken knows who sent what" autocomplete="given-name"></div>
-      <button class="btn primary block" data-action="dojoin">Join team</button>
+      <button class="btn primary block" data-action="dojoin">${locked?"Ask to join":"Join team"}</button>
       <p class="sm muted">Not sure of your number? Ask ${esc(CONFIG.hosts)}.</p></div>
     ${kittyCard()}`;
 }
@@ -739,7 +755,7 @@ function signinSheet(){
 /* Chicken HQ: Live (running the night), Setup (game, kitty, teams, organisers), Content (what players read) */
 const ATABS=[["live","Live"],["setup","Setup"],["content","Content"]];
 function viewAdmin(){
-  const n=pending().length+unseenCount();
+  const n=hqCount();
   return `<div><h1>Chicken HQ</h1>${S.mode==="local"?'<p class="muted">Demo mode: everything saves on this device only. Add your Supabase details to config.js to run the real game.</p>':""}</div>
     <div class="segs" role="group" aria-label="Chicken HQ sections">${ATABS.map(([k,l])=>`<button type="button" data-action="atab" data-k="${k}" aria-pressed="${S.adminTab===k}">${l}${k==="live"&&n?` <span class="cnt">${n}</span>`:""}</button>`).join("")}</div>
     ${({live:adminLive,setup:adminSetup,content:adminContent})[S.adminTab]()}`;
@@ -754,7 +770,15 @@ function lastSeenLine(tid){
 }
 
 /* ---- Live ---- */
-function adminLive(){ return kittyCard()+adminReview()+adminBoard()+adminFeed(); }
+function adminLive(){ return adminRequests()+kittyCard()+adminReview()+adminBoard()+adminFeed(); }
+/* teams are locked once the game is live: late phones wait here until an organiser lets them in */
+function adminRequests(){
+  const list=joinRequests(); if(!list.length) return "";
+  return `<div class="card"><h2>Asking to join</h2><p class="sm muted">Teams are locked while the game is live. Check the team before you let them in.</p>
+    ${list.map(m=>{const t=teamOr(m.team_id);return `<div class="trow board">${dot(t.color,14)}<div style="display:grid;gap:8px;min-width:0"><div><b>${esc(m.display_name||"Unnamed phone")}</b> <span class="sm muted">· asked for ${esc(teamLabel(t))} · ${ago(m.joined_at)}</span></div>
+      <div class="row" style="gap:6px"><select id="req-${esc(m.user_id)}" aria-label="Team for ${esc(m.display_name||"this phone")}" style="width:auto">${hunters().map(x=>`<option value="${x.id}" ${x.id===m.team_id?"selected":""}>Team ${x.num??""}</option>`).join("")}</select>
+        <button class="btn sm good" data-action="approvejoin" data-user="${esc(m.user_id)}">Let in</button><button class="btn sm ghost danger" data-action="kick" data-user="${esc(m.user_id)}" data-msg="Request declined.">Decline</button></div></div></div>`;}).join("")}</div>`;
+}
 function adminReview(){
   const p=pending(), done=D.subs.filter(s=>s.status!=="pending").slice(0,12);
   const subCard=s=>{const t=teamOr(s.team), pub=pubById(s.pub), c=D.challenges[s.pub]||D.challenges._all, n=(D.unlocked[s.team]||[]).length;
@@ -796,7 +820,7 @@ function adminFeed(){
 /* ---- Setup ---- */
 function adminSetup(){
   const st=D.settings.state, sw=(id,on,label,help)=>`<label class="switch" for="${id}"><input type="checkbox" id="${id}" data-setting="${id.replace("set-","")}" ${on?"checked":""}><span class="track"><span class="knob"></span></span><span><b>${label}</b><span class="sm muted" style="display:block">${help}</span></span></label>`;
-  const byTeam={}; D.members.forEach(m=>(byTeam[m.team_id]=byTeam[m.team_id]||[]).push(m));
+  const byTeam={}, joined=D.members.filter(m=>m.approved!==false); joined.forEach(m=>(byTeam[m.team_id]=byTeam[m.team_id]||[]).push(m));
   return `<div class="card"><h2>Game</h2>
       <div class="statebar">${[["setup","Not started","Players can join teams. No check-ins yet."],["live","Live","Check-ins and evidence are open."],["finished","Finished","Check-ins close. Scores and selfies are revealed."]].map(([k,l,hlp])=>
         `<button type="button" class="statebtn ${st===k?"on":""}" data-action="setstate" data-k="${k}" aria-pressed="${st===k}"><b>${l}</b><span class="sm">${hlp}</span></button>`).join("")}</div>
@@ -816,8 +840,8 @@ function adminSetup(){
           ${dot(t.color,20)}${t.chicken?"":`<button class="btn sm ghost danger" data-action="delteam" data-id="${t.id}">Remove</button>`}</div>
         <textarea id="tm-${i}" aria-label="${esc(t.name)} members">${esc(t.members.join(", "))}</textarea></div>`).join("")}
       <div><button class="btn primary" data-action="saveteams">Save teams</button></div></div>
-    <div class="card"><h2>Players</h2><p class="sm muted">Phones that have joined a team. Move someone who joined the wrong team, or remove them so they can join again.</p>
-      ${D.members.length?hunters().map(t=>(byTeam[t.id]||[]).length?`<div class="lbl" style="margin-top:6px">${esc(teamLabel(t))}</div>${byTeam[t.id].map(m=>`<div class="trow">${dot(t.color)}<div style="min-width:0"><b>${esc(m.display_name||"Unnamed phone")}</b><div class="sm muted">Joined ${ago(m.joined_at)}</div></div>
+    <div class="card"><h2>Players</h2><p class="sm muted">Phones that have joined a team. Move someone who joined the wrong team, or remove them so they can join again. Once the game is live, new phones need your approval on HQ → Live.</p>
+      ${joined.length?hunters().map(t=>(byTeam[t.id]||[]).length?`<div class="lbl" style="margin-top:6px">${esc(teamLabel(t))}</div>${byTeam[t.id].map(m=>`<div class="trow">${dot(t.color)}<div style="min-width:0"><b>${esc(m.display_name||"Unnamed phone")}</b><div class="sm muted">Joined ${ago(m.joined_at)}</div></div>
         <div class="row" style="gap:6px"><select data-move="${esc(m.user_id)}" aria-label="Move player" style="width:auto">${hunters().map(x=>`<option value="${x.id}" ${x.id===t.id?"selected":""}>Team ${x.num??""}</option>`).join("")}</select><button class="btn sm ghost danger" data-action="kick" data-user="${esc(m.user_id)}">Remove</button></div></div>`).join("")}`:"").join(""):'<p class="sm muted">Nobody has joined yet.</p>'}</div>
     ${S.mode==="local"?'<div class="card"><h2>Demo data</h2><p class="sm muted">Clears everything saved on this device.</p><div><button class="btn danger" data-action="resetdemo">Reset demo</button></div></div>'
       :`<div class="card"><h2>Organisers</h2><p class="sm muted">Emails that can sign in to Chicken HQ. Each one also needs an account: Supabase → Authentication → Users → Add user (tick Auto Confirm).</p>
@@ -918,8 +942,9 @@ document.addEventListener("click",async e=>{
       const num=parseInt((document.getElementById("joinnum")||{}).value,10), name=((document.getElementById("joinname")||{}).value||"").trim();
       if(!num){toast("Type your team number.");break;}
       a.disabled=true; a.textContent="Joining…";
-      try{ const t=await act(()=>api.join(num,name)); toast(`You're on ${(teamById(t)||{}).name||"your team"}. Allez!`); }
-      catch(err){ a.disabled=false; a.textContent="Join team"; }
+      const label=a.textContent;
+      try{ const t=await act(()=>api.join(num,name)); toast(R.waiting?"Request sent. The chicken will let you in.":`You're on ${(teamById(t)||{}).name||"your team"}. Allez!`); }
+      catch(err){ a.disabled=false; a.textContent=label; }
       break; }
     case "viewas": S.viewAs=a.dataset.team; S.chal={}; closeSheet(); location.hash="play"; renderAll(); break;
     case "stopview": S.viewAs=null; S.chal={}; closeSheet(); if(organiserOnly()) location.hash="admin"; renderAll(); break;
@@ -981,7 +1006,9 @@ document.addEventListener("click",async e=>{
     case "confirmdelteam": { const id=a.dataset.id; closeSheet(); const teams=readTeams().filter(t=>t.id!==id); let n=0; teams.forEach((t,i)=>{t.sort=i; t.num=t.chicken?null:++n;});
       await act(async()=>{ await api.deleteTeam(id); await api.saveTeams(teams); },"Team removed.").catch(()=>{}); break; }
     case "saveteams": await act(()=>api.saveTeams(readTeams()),"Teams saved.").catch(()=>{}); break;
-    case "kick": await act(()=>api.removeMember(a.dataset.user),"Player removed. They can join again.").catch(()=>{}); break;
+    case "kick": await act(()=>api.removeMember(a.dataset.user),a.dataset.msg||"Player removed. They can join again.").catch(()=>{}); break;
+    case "approvejoin": { const u=a.dataset.user, sel=document.getElementById("req-"+u), team=sel?sel.value:null; if(!team) break; a.disabled=true;
+      await act(()=>api.approveMember(u,team),`Let in to ${(teamById(team)||{}).name||"the team"}.`).catch(()=>{}); break; }
     case "addadmin": { const el=document.getElementById("adminq"), em=(el&&el.value||"").trim().toLowerCase(); if(!/^\S+@\S+\.\S+$/.test(em)){toast("Enter an email address.");break;}
       await act(()=>api.addAdmin(em),`${em} added. Create their account in Supabase if you haven't.`).catch(()=>{}); break; }
     case "deladmin": await act(()=>api.removeAdmin(a.dataset.id),"Organiser removed.").catch(()=>{}); break;
@@ -991,7 +1018,7 @@ document.addEventListener("click",async e=>{
     case "resetrules": await saveSettings({rules:null,house:null}).then(()=>toast("Original rules restored.")).catch(()=>{}); break;
     case "resetdemo": api.reset&&api.reset(); location.reload(); break;
     case "signin": openSheet(signinSheet()); break;
-    case "signout": S.viewAs=null; closeSheet(); await sb.auth.signOut(); S.me={email:null,isAdmin:false,userId:null}; R.myTeam=null; location.hash="play"; await refresh(); toast("Signed out."); break;
+    case "signout": S.viewAs=null; closeSheet(); await sb.auth.signOut(); S.me={email:null,isAdmin:false,userId:null}; R.myTeam=null; R.waiting=null; location.hash="play"; await refresh(); toast("Signed out."); break;
     case "install": if(deferredInstall){ deferredInstall.prompt(); deferredInstall=null; renderAll(); } break;
     case "hideinstall": ls.set("noinstall",1); renderAll(); break;
   } }catch(err){ console.warn(err); }
@@ -1068,6 +1095,7 @@ function organiserAlert(table,payload){
   const r=payload.new; if(r.by_user&&r.by_user===S.me.userId) return;
   const t=teamById(r.team_id), p=pubById(r.pub_id); if(!t) return;
   let msg="";
+  if(table==="team_members"&&payload.eventType==="INSERT"&&r.approved===false){ toast(`${r.display_name||"A new phone"} is asking to join ${t.name}. See HQ → Live.`,8000); if(navigator.vibrate) try{ navigator.vibrate(120); }catch(e){} return; }
   if(table==="visits"&&payload.eventType==="INSERT") msg=`${teamLabel(t)} checked in to ${p?p.name:"a pub"}`;
   else if(table==="selfies"&&(payload.eventType==="INSERT"||payload.eventType==="UPDATE")) msg=`📸 ${t.name} ${payload.eventType==="UPDATE"?"retook their":"added a"} selfie at ${p?p.name:"a pub"}`;
   if(!msg) return;
