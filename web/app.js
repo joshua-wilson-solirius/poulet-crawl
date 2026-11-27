@@ -24,6 +24,10 @@ const DEFAULT_CHALLENGES = {
   c3:{title:"Cannibal course", text:"Eat something made of chicken and send proof: a photo or video of one of you eating it."},
 };
 const okCh=c=>c&&(c.title||c.text);
+/* Demo mode only: a salted SHA-256 of the organiser code, so the code itself isn't in this public file.
+   With Supabase connected the database checks the code instead (set it with set_admin_code in the SQL editor). */
+const DEMO_CODE_HASH = "ab9e672ba34cf2c23fe8d14b5314abc364fc0b6c509803f3030bbc66b43cdbe1";
+async function sha256(t){const b=await crypto.subtle.digest("SHA-256",new TextEncoder().encode(t));return [...new Uint8Array(b)].map(x=>x.toString(16).padStart(2,"0")).join("");}
 const PALETTE = ["#E5484D","#3E63DD","#12A594","#8E4EC6","#F76B15","#D6409F","#0090FF","#46A758","#E0A100","#6E56CF"];
 function defaultRules(){
   const ch=chicken();
@@ -165,8 +169,8 @@ const teamById=id=>D.teams.find(t=>t.id===id);
 const teamOr=id=>teamById(id)||{id,name:id,color:"#888",num:null,members:[]};
 const teamLabel=t=>t.chicken?t.name:`Team ${t.num??""} · ${t.name}`;
 const dot=(color,size)=>`<span class="dot" style="background:${color}${size?`;width:${size}px;height:${size}px`:""}"></span>`;
-const isAdmin=()=>S.mode==="local"||S.me.isAdmin;
-/* a signed-in organiser on the real game (in demo mode everyone is organiser and player at once) */
+const isAdmin=()=>!!S.me.isAdmin;   // unlocked with the organiser code (or an organiser email account)
+/* an organiser on the real game (in demo mode an unlocked phone is organiser and player at once) */
 const organiserOnly=()=>S.mode!=="local"&&S.me.isAdmin;
 const myTeamId=()=>{ if(isAdmin()&&S.viewAs) return S.viewAs; return R.myTeam&&teamById(R.myTeam)?R.myTeam:null; };
 const visitsOf=t=>D.visits[t]||[];
@@ -419,17 +423,17 @@ const themePicker=()=>{const cur=ls.get("theme")||"auto";
 /* one menu for who you are: join, preview, sign in or out */
 function accountSheet(){
   const t=teamById(myTeamId()), status=S.mode==="db"?(S.loaded?"Connected live.":"Connecting…"):"Demo mode: everything saves on this device only.";
-  if(organiserOnly()) return `${sheetHead("Organiser")}<p class="sm muted">Signed in as ${esc(S.me.email||"")}. ${status}</p>
+  if(organiserOnly()) return `${sheetHead("Organiser")}<p class="sm muted">Chicken HQ is unlocked on this phone. ${status}</p>
     <div class="lbl">Preview a team</div>
     <div class="teampick">${hunters().map(x=>`<button type="button" data-action="viewas" data-team="${x.id}" ${S.viewAs===x.id?'aria-pressed="true"':""}><span class="sw" style="background:${x.color}"></span><b>${esc(teamLabel(x))}</b></button>`).join("")}</div>
     ${S.viewAs?'<button class="btn block" data-action="stopview">Stop preview</button>':""}
     ${themePicker()}
-    <button class="btn block ghost danger" data-action="signout">Sign out</button>`;
+    <button class="btn block ghost danger" data-action="lockhq">Lock Chicken HQ on this phone</button>`;
   const w=!t&&teamById(R.waiting);
   return `${sheetHead(t?esc(t.name):w?"Waiting to join":"Join a team")}<p class="sm muted">${t?`You're on ${esc(teamLabel(t))}. `:w?`You've asked to join ${esc(teamLabel(w))}. The chicken will let you in. `:""}${status}</p>
     ${t||w?"":'<button class="btn primary block" data-action="jointeam">Join with your team number</button>'}
-    ${S.me.email&&!S.me.isAdmin?`<div class="banner">${esc(S.me.email)} isn't on the organiser list.</div><button class="btn block" data-action="signout">Sign out</button>`
-      :sb?'<button class="btn block ghost" data-action="signin">Organiser sign-in</button>':""}
+    ${S.me.isAdmin?'<button class="btn block" data-action="openhq">Open Chicken HQ</button><button class="btn block ghost danger" data-action="lockhq">Lock Chicken HQ on this phone</button>'
+      :'<button class="btn block ghost" data-action="hqcode">Organiser code</button>'}
     ${themePicker()}`;
 }
 
@@ -761,6 +765,13 @@ function viewRules(){
   <ol class="steps">${rulesList().map(r=>`<li><div><h3>${esc(r.t)}</h3><p>${esc(r.b)}</p></div></li>`).join("")}</ol>
   <div class="card"><h2>House rules</h2><ul class="plain">${houseList().map(x=>`<li>${esc(x)}</li>`).join("")}</ul></div>`;
 }
+function codeSheet(){
+  return `${sheetHead("Organiser code")}
+    <p class="sm muted">For the chickens only. The code unlocks Chicken HQ on this phone.</p>
+    <form id="codeform" style="display:grid;gap:12px" autocomplete="off">
+      <div class="field"><label for="hqcode-in">Code</label><input type="password" id="hqcode-in" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" autofocus></div>
+      <button class="btn primary block" type="submit" id="hqcode-go">Unlock Chicken HQ</button></form>`;
+}
 function signinSheet(){
   return `${sheetHead("Organiser sign-in")}
     <form id="signinform" style="display:grid;gap:12px">
@@ -1039,13 +1050,42 @@ document.addEventListener("click",async e=>{
     case "resetrules": await saveSettings({rules:null,house:null}).then(()=>toast("Original rules restored.")).catch(()=>{}); break;
     case "resetdemo": api.reset&&api.reset(); location.reload(); break;
     case "signin": openSheet(signinSheet()); break;
+    case "hqcode": openSheet(codeSheet()); break;
+    case "openhq": closeSheet(); location.hash="admin"; break;
+    case "lockhq": S.viewAs=null; closeSheet();
+      if(sb){ await sb.rpc("release_admin"); const {data:{session}}=await sb.auth.getSession(); await applySession(session); subscribe(); }
+      else { ls.del("hq"); S.me.isAdmin=false; }
+      location.hash="play"; await refresh(); toast("Chicken HQ locked on this phone."); break;
     case "signout": S.viewAs=null; closeSheet(); await sb.auth.signOut(); S.me={email:null,isAdmin:false,userId:null}; R.myTeam=null; R.waiting=null; location.hash="play"; await refresh(); toast("Signed out."); break;
     case "install": if(deferredInstall){ deferredInstall.prompt(); deferredInstall=null; renderAll(); } break;
     case "hideinstall": ls.set("noinstall",1); renderAll(); break;
   } }catch(err){ console.warn(err); }
 }, true);
 
+async function submitCode(){
+  const inp=document.getElementById("hqcode-in"), b=document.getElementById("hqcode-go"), code=(inp.value||"").trim();
+  if(!code){toast("Type the organiser code.");return;}
+  const reset=()=>{b.disabled=false;b.textContent="Unlock Chicken HQ";inp.value="";inp.focus();};
+  b.disabled=true; b.textContent="Checking…";
+  try{
+    let ok=false;
+    if(sb){
+      if(!S.me.userId){ const r=await sb.auth.signInAnonymously(); if(r.error) throw r.error; S.me.userId=r.data.user.id; }
+      const r=await sb.rpc("claim_admin",{p_code:code}); if(r.error) throw r.error; ok=r.data===true;
+      if(ok){ const {data:{session}}=await sb.auth.getSession(); await applySession(session); subscribe(); }
+    } else {
+      const lock=ls.get("hqlock")||{n:0,until:0};
+      if(Date.now()<lock.until){ toast("Too many wrong tries. Wait a few minutes."); reset(); return; }
+      ok=(await sha256("poulet-hq:"+code.toLowerCase()))===DEMO_CODE_HASH;
+      if(ok){ ls.set("hq",1); ls.del("hqlock"); S.me.isAdmin=true; }
+      else { lock.n++; if(lock.n>=5){ lock.until=Date.now()+10*60000; lock.n=0; } ls.set("hqlock",lock); }
+    }
+    if(!ok){ toast("That's not the code."); reset(); return; }
+    closeSheet(); location.hash="admin"; await refresh(); toast("Chicken HQ unlocked. Bonjour, chicken.");
+  }catch(err){ console.warn(err); toast(/too_many_tries/.test(err.message||"")?"Too many wrong tries. Wait 10 minutes.":/no_code_set/.test(err.message||"")?"No organiser code is set yet. Set it in the Supabase SQL editor.":errText(err)); reset(); }
+}
 document.addEventListener("submit",async e=>{
+  if(e.target.id==="codeform"){ e.preventDefault(); submitCode(); return; }
   if(e.target.id!=="signinform") return; e.preventDefault();
   const em=document.getElementById("signin-email").value.trim(), pw=document.getElementById("signin-pw").value, b=document.getElementById("signin-go");
   if(!em||!pw){toast("Enter the email and password.");return;}
@@ -1107,7 +1147,7 @@ async function applySession(session){
   S.me.userId=session&&session.user?session.user.id:null;
   S.me.email=session&&session.user&&!session.user.is_anonymous?session.user.email:null;
   S.me.isAdmin=false;
-  if(session&&S.me.email){ const r=await sb.rpc("is_admin"); S.me.isAdmin=!r.error&&r.data===true; }
+  if(session){ const r=await sb.rpc("is_admin"); S.me.isAdmin=!r.error&&r.data===true; }
   S.chal={}; S.signed={};
 }
 /* organisers get a pop-up for every check-in and selfie. Players never receive other teams' rows, so they never see these. */
@@ -1139,7 +1179,7 @@ function subscribe(){
 (async()=>{
   derive();
   if(!CFG.supabaseUrl||!CFG.supabaseAnonKey||!window.supabase){
-    S.mode="local"; api=LocalBackend(); await refresh(); return;
+    S.mode="local"; S.me.isAdmin=!!ls.get("hq"); api=LocalBackend(); await refresh(); return;
   }
   sb=window.supabase.createClient(CFG.supabaseUrl, CFG.supabaseAnonKey, {auth:{persistSession:true,autoRefreshToken:true,detectSessionInUrl:false}});
   api=SupabaseBackend(sb); S.mode="db"; renderAll();

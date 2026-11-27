@@ -12,8 +12,9 @@ a challenge every 2nd pub, photo/video evidence, and clues the organisers unlock
 1. **Create the Supabase project**: make a free project at supabase.com.
 2. **Allow team logins**: go to **Authentication → Sign In / Providers** and turn on **Allow anonymous sign-ins**. Players join by team number, so they never need an account.
 3. **Database**: in **SQL Editor**, paste `supabase/schema.sql` and run it. Then run `supabase/tests/access_test.sql`. It should end with `ALL ACCESS TESTS PASSED`, and it leaves no data behind.
-4. **Organiser login**: go to **Authentication → Users → Add user → Create new user**, enter the organiser email and password (at least 6 characters), and tick **Auto Confirm User**.
-   Then, in the SQL Editor, run `insert into public.admins (email) values ('<that email>');`.
+4. **Organiser code**: in the SQL Editor, run `select public.set_admin_code('<your code>');`. Never commit the code.
+   Organisers tap the account button in the app, choose **Organiser code** and type it, and that phone gets Chicken HQ. Five wrong tries locks a phone out for 10 minutes.
+   Running `set_admin_code` again changes the code and locks every organiser phone.
 5. **Connect the app**: copy the Project URL and the anon/publishable key into `web/config.js`.
    That key is public by design, because the database rules decide who can see and change what.
 6. **Deploy**: merge to `main`. GitHub Actions publishes `web/` to GitHub Pages.
@@ -33,7 +34,7 @@ and **Content** (hideout and clues, challenges and pub info, rules).
 
 ## Who can do what
 
-Players join on their phone by typing their team number (1, 2, 3 …). Organisers sign in with email and password.
+Players join on their phone by typing their team number (1, 2, 3 …). Organisers unlock Chicken HQ by typing the organiser code, which the database checks.
 
 Teams lock when the game goes **Live**. A phone joining after that sends a request instead, and gets no access until an organiser taps
 **Let in** on Chicken HQ → **Live** (where they can also pick a different team, or decline). Players can never switch team themselves;
