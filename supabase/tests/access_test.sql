@@ -268,15 +268,6 @@ do $$ begin
   exception when others then if sqlerrm like 'FAIL%' then raise; end if; end;
 end $$;
 
--- ---------- organiser resets the game ----------
-select pg_temp.as_admin_db();
-select pg_temp.act_as('00000000-0000-0000-0000-0000000000a1');
-select public.reset_game();
-do $$ begin assert (select count(*) from public.visits) = 0 and (select count(*) from public.submissions) = 0
-             and (select count(*) from public.unlocked) = 0 and (select count(*) from public.team_members) = 0, 'reset clears play data and teams'; end $$;
-do $$ begin assert (select data ->> 'state' from public.settings where id = 1) = 'setup', 'reset puts the game back to not started'; end $$;
-do $$ begin assert (select count(*) from public.teams) > 0 and (select count(*) from public.secret) = 1, 'reset keeps teams and the secret'; end $$;
-
 -- ---------- visitor (not signed in) ----------
 select pg_temp.as_admin_db();
 set local role anon;
@@ -292,5 +283,13 @@ do $$ begin
 end $$;
 
 reset role;
+-- ---------- organiser resets the game ----------
+select pg_temp.act_as('00000000-0000-0000-0000-0000000000a1');
+select public.reset_game();
+do $$ begin assert (select count(*) from public.visits) = 0 and (select count(*) from public.submissions) = 0
+             and (select count(*) from public.unlocked) = 0 and (select count(*) from public.team_members) = 0, 'reset clears play data and teams'; end $$;
+do $$ begin assert (select data ->> 'state' from public.settings where id = 1) = 'setup', 'reset puts the game back to not started'; end $$;
+do $$ begin assert (select count(*) from public.teams) > 0 and (select count(*) from public.secret) = 1, 'reset keeps teams and the secret'; end $$;
+select pg_temp.as_admin_db();
 select 'ALL ACCESS TESTS PASSED' as result;
 rollback;
