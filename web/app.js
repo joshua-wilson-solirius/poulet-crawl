@@ -227,10 +227,10 @@ function SupabaseBackend(client){
         pubinfo:client.from("pub_info").select("*"),
         spends:client.from("spends").select("*"),
         roster:client.rpc("roster"),
+        rosters:client.from("team_rosters").select("*"),   // visitors see the chicken's names; RLS hides the rest
       };
       if(signedIn){
         Object.assign(jobs,{
-          rosters:client.from("team_rosters").select("*"),
           members:client.from("team_members").select("*"),
           visits:client.from("visits").select("*"),
           subs:client.from("submissions").select("*"),
