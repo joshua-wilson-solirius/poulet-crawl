@@ -171,15 +171,18 @@ begin
 end $$;
 revoke execute on function public.set_admin_code(text) from public, anon, authenticated;
 
--- The app calls this with what the organiser typed. Five wrong tries locks that phone out for 10 minutes.
+-- The app calls this with what the organiser typed. Five wrong tries locks that phone out for 10 minutes,
+-- and 20 wrong tries from all phones together locks code entry for everyone for 10 minutes.
 create or replace function public.claim_admin(p_code text) returns boolean
 language plpgsql security definer set search_path = public as $$
 declare v_hash text;
 begin
   if auth.uid() is null then raise exception 'not_signed_in'; end if;
-  if (select count(*) from public.admin_attempts where user_id = auth.uid() and at > now() - interval '10 minutes') >= 5 then
+  if (select count(*) from public.admin_attempts where user_id = auth.uid() and at > now() - interval '10 minutes') >= 5
+     or (select count(*) from public.admin_attempts where at > now() - interval '10 minutes') >= 20 then   -- across all phones
     raise exception 'too_many_tries';
   end if;
+  delete from public.admin_attempts where at < now() - interval '1 day';
   select hash into v_hash from public.admin_code where id = 1;
   if v_hash is null then raise exception 'no_code_set'; end if;
   if extensions.crypt(lower(trim(coalesce(p_code, ''))), v_hash) = v_hash then
@@ -500,3 +503,27 @@ grant execute on function public.claim_admin(text), public.release_admin(), publ
 -- select public.set_admin_code('your code here');
 -- Organisers then tap the account button in the app → "Organiser code".
 -- ---------------------------------------------------------------
+
+-- ---------------------------------------------------------------
+-- Hardening (runs last)
+-- ---------------------------------------------------------------
+-- Supabase's defaults give the API roles TRUNCATE / TRIGGER / REFERENCES on every table. Row-level security
+-- doesn't cover those, and the app never needs them.
+revoke truncate, trigger, references on all tables in schema public from anon, authenticated;
+alter default privileges in schema public revoke truncate, trigger, references on tables from anon, authenticated;
+
+-- Functions are callable by everyone by default. Lock them all down, then open only what each role needs.
+revoke execute on all functions in schema public from public, anon, authenticated;
+alter default privileges in schema public revoke execute on functions from public, anon, authenticated;
+-- read helpers used inside row-level security rules (they must be callable by whoever reads the table)
+grant execute on function public.is_admin(), public.my_team(), public.setting(text), public.can_see_selfies(text) to anon, authenticated;
+-- visitors who haven't joined yet see who is on each team
+grant execute on function public.roster() to anon, authenticated;
+-- signed-in phones (players and organisers); organiser-only functions still check is_admin() themselves
+grant execute on function
+  public.join_team(int, text), public.leave_team(), public.get_challenge(text), public.team_positions(), public.leaderboard(),
+  public.claim_admin(text), public.release_admin(),
+  public.approve_submission(uuid, text), public.reject_submission(uuid, text),
+  public.unlock_clue(text, text, text), public.relock_clue(text), public.reset_game()
+to authenticated;
+-- set_admin_code stays callable only from the SQL editor

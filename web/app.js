@@ -24,10 +24,9 @@ const DEFAULT_CHALLENGES = {
   c3:{title:"Cannibal course", text:"Eat something made of chicken and send proof: a photo or video of one of you eating it."},
 };
 const okCh=c=>c&&(c.title||c.text);
-/* Demo mode only: a salted SHA-256 of the organiser code, so the code itself isn't in this public file.
-   With Supabase connected the database checks the code instead (set it with set_admin_code in the SQL editor). */
-const DEMO_CODE_HASH = "ab9e672ba34cf2c23fe8d14b5314abc364fc0b6c509803f3030bbc66b43cdbe1";
-async function sha256(t){const b=await crypto.subtle.digest("SHA-256",new TextEncoder().encode(t));return [...new Uint8Array(b)].map(x=>x.toString(16).padStart(2,"0")).join("");}
+/* The organiser code is only ever checked by the database (claim_admin). Nothing derived from it lives in
+   this public file. Demo mode (no Supabase) is for local development, so there HQ unlocks only on localhost. */
+const isLocalDev=()=>/^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname);
 const PALETTE = ["#E5484D","#3E63DD","#12A594","#8E4EC6","#F76B15","#D6409F","#0090FF","#46A758","#E0A100","#6E56CF"];
 function defaultRules(){
   const ch=chicken();
@@ -1098,7 +1097,8 @@ async function submitCode(){
     } else {
       const lock=ls.get("hqlock")||{n:0,until:0};
       if(Date.now()<lock.until){ toast("Too many wrong tries. Wait a few minutes."); reset(); return; }
-      ok=(await sha256("poulet-hq:"+code.toLowerCase()))===DEMO_CODE_HASH;
+      if(!isLocalDev()){ toast("This copy isn't connected to the game, so Chicken HQ can't be unlocked here."); reset(); return; }
+      ok=code.length>0;   // local development only
       if(ok){ ls.set("hq",1); ls.del("hqlock"); S.me.isAdmin=true; await api.leaveTeam(); }
       else { lock.n++; if(lock.n>=5){ lock.until=Date.now()+10*60000; lock.n=0; } ls.set("hqlock",lock); }
     }

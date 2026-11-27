@@ -281,6 +281,19 @@ do $$ begin
   begin perform count(*) from public.selfies; raise exception 'FAIL: visitor read selfies';
   exception when insufficient_privilege then null; end;
 end $$;
+do $$ begin
+  begin perform public.reset_game(); raise exception 'FAIL: visitor could call reset_game';
+  exception when insufficient_privilege then null; end;
+end $$;
+do $$ begin
+  begin perform public.claim_admin('x'); raise exception 'FAIL: visitor could try the organiser code';
+  exception when insufficient_privilege then null; end;
+end $$;
+do $$ begin assert (select count(*) from public.roster()) >= 0, 'visitor can read the roster'; end $$;
+do $$ begin
+  begin truncate public.visits; raise exception 'FAIL: visitor could truncate a table';
+  exception when insufficient_privilege then null; end;
+end $$;
 
 reset role;
 -- ---------- organiser resets the game ----------
