@@ -250,20 +250,39 @@ $$;
 -- Before the game: join straight away. Once it's live (or finished) teams are locked, so a new phone's
 -- join becomes a request (approved = false) that an organiser approves in Chicken HQ.
 -- Players can never switch team themselves; organisers move or remove them.
+-- One person = one spot. Names are matched ignoring case and spaces:
+--   same name already on this team from another phone -> this phone takes over that spot (e.g. Safari then home-screen app)
+--   same name already on a different team               -> refused, so nobody can be on two teams
 create or replace function public.join_team(p_num int, p_name text default null) returns text
 language plpgsql security definer set search_path = public as $$
 declare v_team text; v_cur text; v_open boolean := coalesce(nullif(public.setting('state'), ''), 'setup') = 'setup';
+        v_name text := nullif(regexp_replace(trim(coalesce(p_name, '')), '\s+', ' ', 'g'), '');
+        v_key text; v_prev public.team_members;
 begin
   if auth.uid() is null then raise exception 'not_signed_in'; end if;
+  if v_name is null then raise exception 'name_required'; end if;
+  if length(v_name) > 24 then v_name := left(v_name, 24); end if;
+  v_key := lower(v_name);
   select id into v_team from public.teams where num = p_num and not is_chicken;
   if v_team is null then raise exception 'no_such_team'; end if;
   select team_id into v_cur from public.team_members where user_id = auth.uid();
   if v_cur is not null and v_cur <> v_team then raise exception 'already_in_team'; end if;
-  insert into public.team_members (user_id, team_id, display_name, approved)
-  values (auth.uid(), v_team, nullif(trim(p_name), ''), v_open)
-  on conflict (user_id) do update set display_name = coalesce(excluded.display_name, public.team_members.display_name);
+  if exists (select 1 from public.team_members where lower(display_name) = v_key and team_id <> v_team and user_id <> auth.uid()) then
+    raise exception 'name_on_other_team';
+  end if;
+  -- the same person on another phone: hand their spot (and approval) to this phone
+  select * into v_prev from public.team_members
+   where team_id = v_team and lower(display_name) = v_key and user_id <> auth.uid() order by approved desc, joined_at limit 1;
+  delete from public.team_members where team_id = v_team and lower(display_name) = v_key and user_id <> auth.uid();
+  insert into public.team_members (user_id, team_id, display_name, approved, joined_at)
+  values (auth.uid(), v_team, v_name, coalesce(v_prev.approved, v_open), coalesce(v_prev.joined_at, now()))
+  on conflict (user_id) do update set display_name = excluded.display_name,
+    approved = public.team_members.approved or excluded.approved;
   return v_team;
 end $$;
+
+-- Backstop: never two spots with the same name on one team.
+create unique index if not exists team_members_one_name_per_team on public.team_members (team_id, lower(display_name)) where display_name is not null;
 
 -- A team only sees a challenge once it checks in at one of its challenge pubs (every `interval`-th pub,
 -- up to `maxChallenges` of them; 0 = no limit). Challenges go by number: 'c1', 'c2' … in public.challenges,

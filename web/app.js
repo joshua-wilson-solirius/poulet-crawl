@@ -127,6 +127,8 @@ function openSheet(html){document.getElementById("sheetroot").innerHTML=`<div cl
 function closeSheet(){document.getElementById("sheetroot").innerHTML="";}
 function errText(e){const m=(e&&(e.message||e.error_description||e.msg))||String(e||"");
   if(/no_such_team/.test(m)) return "There's no team with that number.";
+  if(/name_on_other_team/.test(m)) return "Someone with that name is already on another team. Check your team number, or add your surname initial.";
+  if(/name_required/.test(m)) return "Type your name so your team knows it's you.";
   if(/already_in_team/.test(m)) return "This phone is already on another team. Ask an organiser to move you.";
   if(/row-level security|permission denied|42501/i.test(m)) return D.settings&&D.settings.state!=="live"?"The game isn't live yet. Wait for the chicken to start it.":"You don't have permission to do that.";
   if(/admins_only/.test(m)) return "Only organisers can do that.";

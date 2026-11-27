@@ -4,6 +4,12 @@
 
 begin;
 
+-- Start from an empty game so real players don't affect the counts below. All of this is rolled back at the end,
+-- so the real game is untouched.
+delete from public.unlocked where true; delete from public.submissions where true; delete from public.selfies where true;
+delete from public.visits where true; delete from public.found where true; delete from public.spends where true;
+delete from public.team_members where true; delete from public.admin_attempts where true; delete from public.admin_devices where true;
+
 -- fake people
 insert into auth.users (id, email, email_confirmed_at, is_anonymous, aud, role) values
   ('00000000-0000-0000-0000-0000000000e1', null, null, true, 'authenticated', 'authenticated'),   -- organiser phone using the code
@@ -29,13 +35,13 @@ create function pg_temp.as_admin_db() returns void language plpgsql as $$ begin 
 
 -- ---------- before the game: player 1 joins team 1, player 2 joins team 2 ----------
 select pg_temp.act_as('00000000-0000-0000-0000-0000000000b2');
-do $$ begin assert public.join_team(2) is not null, 'player 2 joins team 2'; end $$;
+do $$ begin assert public.join_team(2, 'Robin') is not null, 'player 2 joins team 2'; end $$;
 select pg_temp.as_admin_db();
 select pg_temp.act_as('00000000-0000-0000-0000-0000000000b1');
 do $$ begin assert public.join_team(1, 'Pat') = (select id from public.teams where num = 1), 'player 1 joins team 1'; end $$;
 do $$ begin assert public.my_team() = (select id from public.teams where num = 1), 'joining before the game is approved straight away'; end $$;
 do $$ begin
-  begin perform public.join_team(2); raise exception 'FAIL: player switched team on their own';
+  begin perform public.join_team(2, 'Pat'); raise exception 'FAIL: player switched team on their own';
   exception when others then if sqlerrm like 'FAIL%' then raise; end if; end;
 end $$;
 do $$ begin
@@ -50,7 +56,7 @@ select pg_temp.as_admin_db();
 update public.settings set data = data || '{"state":"live"}' where id = 1;
 select pg_temp.act_as('00000000-0000-0000-0000-0000000000b1');
 do $$ begin
-  begin perform public.join_team(2); raise exception 'FAIL: player switched team during the game';
+  begin perform public.join_team(2, 'Pat'); raise exception 'FAIL: player switched team during the game';
   exception when others then if sqlerrm like 'FAIL%' then raise; end if; end;
 end $$;
 
@@ -172,7 +178,7 @@ do $$ begin
   exception when insufficient_privilege then null; end;
 end $$;
 do $$ begin
-  begin perform public.join_team(2); raise exception 'FAIL: waiting phone switched its request to another team';
+  begin perform public.join_team(2, 'Late'); raise exception 'FAIL: waiting phone switched its request to another team';
   exception when others then if sqlerrm like 'FAIL%' then raise; end if; end;
 end $$;
 update public.team_members set approved = true where user_id = auth.uid();   -- silently affects 0 rows under RLS
@@ -230,6 +236,33 @@ do $$ begin assert (select count(*) from public.selfies) = 1, 'undoing a check-i
 select pg_temp.as_admin_db();
 select pg_temp.act_as('00000000-0000-0000-0000-0000000000c1');
 do $$ begin assert (select count(*) from public.selfies) = 0, 'account with no team sees no selfies'; end $$;
+
+-- ---------- one person, one spot ----------
+select pg_temp.as_admin_db();
+update public.settings set data = data || '{"state":"setup"}' where id = 1;
+insert into auth.users (id, email, email_confirmed_at, is_anonymous, aud, role) values
+  ('00000000-0000-0000-0000-0000000000f1', null, null, true, 'authenticated', 'authenticated'),
+  ('00000000-0000-0000-0000-0000000000f2', null, null, true, 'authenticated', 'authenticated'),
+  ('00000000-0000-0000-0000-0000000000f3', null, null, true, 'authenticated', 'authenticated');
+select pg_temp.act_as('00000000-0000-0000-0000-0000000000f1');
+do $$ begin assert public.join_team(3, 'Henry') is not null, 'Henry joins team 3 in Safari'; end $$;
+do $$ begin
+  begin perform public.join_team(3, '   '); raise exception 'FAIL: joined without a name';
+  exception when others then if sqlerrm like 'FAIL%' then raise; end if; end;
+end $$;
+select pg_temp.as_admin_db();
+select pg_temp.act_as('00000000-0000-0000-0000-0000000000f2');
+do $$ begin assert public.join_team(3, '  henry ') is not null, 'Henry joins again from the home-screen app'; end $$;
+select pg_temp.as_admin_db();
+do $$ begin assert (select count(*) from public.team_members where lower(display_name) = 'henry') = 1, 'still only one Henry'; end $$;
+do $$ begin assert (select user_id from public.team_members where lower(display_name) = 'henry') = '00000000-0000-0000-0000-0000000000f2', 'the newest phone has the spot'; end $$;
+select pg_temp.act_as('00000000-0000-0000-0000-0000000000f3');
+do $$ begin
+  begin perform public.join_team(4, 'HENRY'); raise exception 'FAIL: same name joined a second team';
+  exception when others then if sqlerrm like 'FAIL%' then raise; end if; end;
+end $$;
+select pg_temp.as_admin_db();
+update public.settings set data = data || '{"state":"live"}' where id = 1;
 
 -- ---------- organiser code ----------
 select pg_temp.as_admin_db();
