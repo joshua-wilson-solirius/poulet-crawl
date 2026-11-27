@@ -92,7 +92,7 @@ function weekRows(str){const H=parseHours(str); if(!H) return ""; const di=(new 
 
 /* =================== helpers =================== */
 const CFG = window.POULET_CONFIG || {};
-const LS="poulet-v4";
+const LS="poulet-v5";   // bumped to wipe every phone's old test data
 const ls = {get(k){try{return JSON.parse(localStorage.getItem(LS+k))}catch(e){return null}}, set(k,v){try{localStorage.setItem(LS+k,JSON.stringify(v))}catch(e){}}, del(k){try{localStorage.removeItem(LS+k)}catch(e){}}};
 const esc=s=>String(s==null?"":s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const ms=t=>typeof t==="number"?t:Date.parse(t);
@@ -170,8 +170,8 @@ const teamOr=id=>teamById(id)||{id,name:id,color:"#888",num:null,members:[]};
 const teamLabel=t=>t.chicken?t.name:`Team ${t.num??""} · ${t.name}`;
 const dot=(color,size)=>`<span class="dot" style="background:${color}${size?`;width:${size}px;height:${size}px`:""}"></span>`;
 const isAdmin=()=>!!S.me.isAdmin;   // unlocked with the organiser code (or an organiser email account)
-/* an organiser on the real game (in demo mode an unlocked phone is organiser and player at once) */
-const organiserOnly=()=>S.mode!=="local"&&S.me.isAdmin;
+/* organisers run the game and aren't on a team; they can preview any team */
+const organiserOnly=()=>!!S.me.isAdmin;
 const myTeamId=()=>{ if(isAdmin()&&S.viewAs) return S.viewAs; return R.myTeam&&teamById(R.myTeam)?R.myTeam:null; };
 const visitsOf=t=>D.visits[t]||[];
 const lastPubOf=t=>{const v=visitsOf(t); if(v.length) return pubById(v[v.length-1].pub); const p=D.positions[t]; return p?pubById(p.pub):null;};
@@ -283,6 +283,8 @@ function SupabaseBackend(client){
       if(old&&old!==path) await client.storage.from("selfies").remove([old]);   // tidy up the replaced photo; a failure here is harmless
     },
     addSpend:(amount,note)=>q(client.from("spends").insert({amount,note:note||null})),
+    leaveTeam:()=>q(client.rpc("leave_team")),
+    resetGame:()=>q(client.rpc("reset_game")),
     delSpend:id=>q(client.from("spends").delete().eq("id",id)),
     async deleteSelfie(team,pub,path){
       await q(client.from("selfies").delete().eq("team_id",team).eq("pub_id",pub));
@@ -366,6 +368,9 @@ function LocalBackend(){
     async removeMember(user){ db.members=db.members.filter(x=>x.user_id!==user); if(user==="me") db.myTeam=null; save(); },
     async addAdmin(){}, async removeAdmin(){},
     reset(){ ls.del(K); },
+    async leaveTeam(){ db.members=db.members.filter(x=>x.user_id!=="me"); db.myTeam=null; save(); },
+    async resetGame(){ ["visits","subs","selfies","spends","unlocked","found","members"].forEach(k=>db[k]=[]); db.myTeam=null;
+      db.settings=Object.assign({},db.settings,{state:"setup"}); save(); },
   };
 }
 
@@ -428,13 +433,13 @@ function accountSheet(){
     <div class="teampick">${hunters().map(x=>`<button type="button" data-action="viewas" data-team="${x.id}" ${S.viewAs===x.id?'aria-pressed="true"':""}><span class="sw" style="background:${x.color}"></span><b>${esc(teamLabel(x))}</b></button>`).join("")}</div>
     ${S.viewAs?'<button class="btn block" data-action="stopview">Stop preview</button>':""}
     ${themePicker()}
-    <button class="btn block ghost danger" data-action="lockhq">Lock Chicken HQ on this phone</button>`;
+    <button class="btn block ghost danger" data-action="logout">Log out</button>`;
   const w=!t&&teamById(R.waiting);
   return `${sheetHead(t?esc(t.name):w?"Waiting to join":"Join a team")}<p class="sm muted">${t?`You're on ${esc(teamLabel(t))}. `:w?`You've asked to join ${esc(teamLabel(w))}. The chicken will let you in. `:""}${status}</p>
     ${t||w?"":'<button class="btn primary block" data-action="jointeam">Join with your team number</button>'}
-    ${S.me.isAdmin?'<button class="btn block" data-action="openhq">Open Chicken HQ</button><button class="btn block ghost danger" data-action="lockhq">Lock Chicken HQ on this phone</button>'
-      :'<button class="btn block ghost" data-action="hqcode">Organiser code</button>'}
-    ${themePicker()}`;
+    <button class="btn block ghost" data-action="hqcode">Organiser code</button>
+    ${themePicker()}
+    ${t||w?'<button class="btn block ghost danger" data-action="logout">Log out</button>':""}`;
 }
 
 /* =================== PLAY =================== */
@@ -874,10 +879,8 @@ function adminSetup(){
     <div class="card"><h2>Players</h2><p class="sm muted">Phones that have joined a team. Move someone who joined the wrong team, or remove them so they can join again. Once the game is live, new phones need your approval on HQ → Live.</p>
       ${joined.length?hunters().map(t=>(byTeam[t.id]||[]).length?`<div class="lbl" style="margin-top:6px">${esc(teamLabel(t))}</div>${byTeam[t.id].map(m=>`<div class="trow">${dot(t.color)}<div style="min-width:0"><b>${esc(m.display_name||"Unnamed phone")}</b><div class="sm muted">Joined ${ago(m.joined_at)}</div></div>
         <div class="row" style="gap:6px"><select data-move="${esc(m.user_id)}" aria-label="Move player" style="width:auto">${hunters().map(x=>`<option value="${x.id}" ${x.id===t.id?"selected":""}>Team ${x.num??""}</option>`).join("")}</select><button class="btn sm ghost danger" data-action="kick" data-user="${esc(m.user_id)}">Remove</button></div></div>`).join("")}`:"").join(""):'<p class="sm muted">Nobody has joined yet.</p>'}</div>
-    ${S.mode==="local"?'<div class="card"><h2>Demo data</h2><p class="sm muted">Clears everything saved on this device.</p><div><button class="btn danger" data-action="resetdemo">Reset demo</button></div></div>'
-      :`<div class="card"><h2>Organisers</h2><p class="sm muted">Emails that can sign in to Chicken HQ. Each one also needs an account: Supabase → Authentication → Users → Add user (tick Auto Confirm).</p>
-      ${R.admins.map(e=>`<div class="trow">${dot("var(--yolk)")}<span class="sm">${esc(e)}${e===S.me.email?" (you)":""}</span>${e===S.me.email?"<span></span>":`<button class="btn sm ghost danger" data-action="deladmin" data-id="${esc(e)}">Remove</button>`}</div>`).join("")}
-      <div class="row"><input type="text" id="adminq" inputmode="email" autocomplete="off" autocapitalize="off" placeholder="friend@example.com" aria-label="Organiser email" style="flex:1;min-width:180px"><button class="btn" data-action="addadmin">Add</button></div></div>`}`;
+    <div class="card"><h2>Start again</h2><p class="sm muted">Clears every check-in, piece of evidence, selfie, clue, found mark and kitty spend, takes everyone off their teams, and puts the game back to Not started. Teams, challenges, clues, the hideout and settings stay.</p>
+      <div><button class="btn danger" data-action="resetgame">Reset the game</button></div></div>`;
 }
 
 /* ---- Content ---- */
@@ -1052,6 +1055,16 @@ document.addEventListener("click",async e=>{
     case "signin": openSheet(signinSheet()); break;
     case "hqcode": openSheet(codeSheet()); break;
     case "openhq": closeSheet(); location.hash="admin"; break;
+    case "logout": openSheet(`${sheetHead("Log out?")}<p class="muted">${organiserOnly()?"This locks Chicken HQ on this phone. You'll need the organiser code to get back in.":`This phone leaves ${esc((teamById(myTeamId())||teamById(R.waiting)||{}).name||"its team")} and goes back to the join screen.${live()?" Rejoining during the game needs the chicken's OK.":""}`}</p>
+      <button class="btn danger block" data-action="dologout">Log out</button><button class="btn block ghost" data-action="closesheet">Cancel</button>`); break;
+    case "dologout": S.viewAs=null; S.chal={}; S.draft={}; closeSheet();
+      try{ await api.leaveTeam(); }catch(e){ console.warn(e); }
+      if(sb){ await sb.rpc("release_admin").catch(()=>{}); await sb.auth.signOut(); S.me={email:null,isAdmin:false,userId:null}; subscribe(); }
+      else { ls.del("hq"); S.me.isAdmin=false; }
+      R.myTeam=null; R.waiting=null; location.hash="play"; await refresh(); toast("Logged out. This phone is starting fresh."); break;
+    case "resetgame": openSheet(`${sheetHead("Reset the game?")}<p class="muted">Everyone's progress is wiped and every phone has to join its team again. This can't be undone.</p>
+      <button class="btn danger block" data-action="doresetgame">Yes, reset everything</button><button class="btn block ghost" data-action="closesheet">Cancel</button>`); break;
+    case "doresetgame": closeSheet(); S.viewAs=null; S.chal={}; S.draft={}; await act(()=>api.resetGame(),"Game reset. Everyone starts fresh.").catch(()=>{}); break;
     case "lockhq": S.viewAs=null; closeSheet();
       if(sb){ await sb.rpc("release_admin"); const {data:{session}}=await sb.auth.getSession(); await applySession(session); subscribe(); }
       else { ls.del("hq"); S.me.isAdmin=false; }
@@ -1077,7 +1090,7 @@ async function submitCode(){
       const lock=ls.get("hqlock")||{n:0,until:0};
       if(Date.now()<lock.until){ toast("Too many wrong tries. Wait a few minutes."); reset(); return; }
       ok=(await sha256("poulet-hq:"+code.toLowerCase()))===DEMO_CODE_HASH;
-      if(ok){ ls.set("hq",1); ls.del("hqlock"); S.me.isAdmin=true; }
+      if(ok){ ls.set("hq",1); ls.del("hqlock"); S.me.isAdmin=true; await api.leaveTeam(); }
       else { lock.n++; if(lock.n>=5){ lock.until=Date.now()+10*60000; lock.n=0; } ls.set("hqlock",lock); }
     }
     if(!ok){ toast("That's not the code."); reset(); return; }
@@ -1178,6 +1191,7 @@ function subscribe(){
 }
 (async()=>{
   derive();
+  try{ Object.keys(localStorage).filter(k=>/^poulet-v[0-4]/.test(k)).forEach(k=>localStorage.removeItem(k)); }catch(e){}
   if(!CFG.supabaseUrl||!CFG.supabaseAnonKey||!window.supabase){
     S.mode="local"; S.me.isAdmin=!!ls.get("hq"); api=LocalBackend(); await refresh(); return;
   }

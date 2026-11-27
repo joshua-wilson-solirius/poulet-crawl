@@ -243,11 +243,35 @@ do $$ begin assert public.is_admin(), 'code phone is an organiser'; end $$;
 do $$ begin assert (select count(*) from public.secret) = 1, 'code organiser reads the secret'; end $$;
 select public.release_admin();
 do $$ begin assert not public.is_admin(), 'locking HQ removes organiser access'; end $$;
+-- a player who unlocks HQ comes off their team; leave_team works for anyone
+select pg_temp.as_admin_db();
+select pg_temp.act_as('00000000-0000-0000-0000-0000000000b2');
+do $$ begin
+  begin perform public.reset_game(); raise exception 'FAIL: player reset the game';
+  exception when others then if sqlerrm like 'FAIL%' then raise; end if; end;
+end $$;
+do $$ begin assert public.my_team() is not null, 'player 2 is on a team before unlocking'; end $$;
+do $$ begin assert public.claim_admin('test-code-123'), 'player 2 unlocks HQ'; end $$;
+do $$ begin assert public.my_team() is null, 'unlocking HQ takes the phone off its team'; end $$;
+select public.release_admin();
+select pg_temp.as_admin_db();
+select pg_temp.act_as('00000000-0000-0000-0000-0000000000b1');
+select public.leave_team();
+do $$ begin assert public.my_team() is null, 'leave_team takes a player off their team'; end $$;
 do $$ begin perform public.claim_admin('x'); perform public.claim_admin('x'); perform public.claim_admin('x'); perform public.claim_admin('x'); perform public.claim_admin('x'); end $$;
 do $$ begin
   begin perform public.claim_admin('test-code-123'); raise exception 'FAIL: no lockout after 5 wrong tries';
   exception when others then if sqlerrm like 'FAIL%' then raise; end if; end;
 end $$;
+
+-- ---------- organiser resets the game ----------
+select pg_temp.as_admin_db();
+select pg_temp.act_as('00000000-0000-0000-0000-0000000000a1');
+select public.reset_game();
+do $$ begin assert (select count(*) from public.visits) = 0 and (select count(*) from public.submissions) = 0
+             and (select count(*) from public.unlocked) = 0 and (select count(*) from public.team_members) = 0, 'reset clears play data and teams'; end $$;
+do $$ begin assert (select data ->> 'state' from public.settings where id = 1) = 'setup', 'reset puts the game back to not started'; end $$;
+do $$ begin assert (select count(*) from public.teams) > 0 and (select count(*) from public.secret) = 1, 'reset keeps teams and the secret'; end $$;
 
 -- ---------- visitor (not signed in) ----------
 select pg_temp.as_admin_db();
