@@ -12,9 +12,11 @@ insert into auth.users (id, email, email_confirmed_at, is_anonymous, aud, role) 
   ('00000000-0000-0000-0000-0000000000c1', 'imposter@poulet.test', null, false, 'authenticated', 'authenticated'), -- unconfirmed
   ('00000000-0000-0000-0000-0000000000d1', null, null, true, 'authenticated', 'authenticated');   -- turns up after the game is live
 insert into public.admins (email) values ('test-organiser@poulet.test'), ('imposter@poulet.test');
-update public.settings set data = data || '{"state":"setup","showOthers":false,"showBoard":false,"interval":2}' where id = 1;
+update public.settings set data = data || '{"state":"setup","showOthers":false,"showBoard":false,"interval":2,"maxChallenges":2}' where id = 1;
 update public.secret set hideout = 'p_hide', clues = array['first clue', '', 'third clue'] where id = 1;
-insert into public.challenges (pub_id, title, body) values ('p2', 'Secret task', 'Do the thing') on conflict (pub_id) do update set title = excluded.title, body = excluded.body;
+insert into public.challenges (pub_id, title, body) values
+  ('p2', 'Secret task', 'Do the thing'), ('c1', 'Numbered one', 'First challenge'), ('c2', 'Numbered two', 'Second challenge')
+on conflict (pub_id) do update set title = excluded.title, body = excluded.body;
 
 create function pg_temp.act_as(p uuid) returns void language plpgsql as $$
 begin
@@ -54,7 +56,13 @@ end $$;
 -- player 1 checks in twice; second pub is a challenge stop
 insert into public.visits (team_id, pub_id, at) values (public.my_team(), 'p1', now() - interval '1 hour'), (public.my_team(), 'p2', now());
 do $$ begin assert public.get_challenge('p1') is null, 'stop 1 is not a challenge pub'; end $$;
-do $$ begin assert public.get_challenge('p2') ->> 'title' = 'Secret task', 'stop 2 reveals its challenge'; end $$;
+do $$ begin assert public.get_challenge('p2') ->> 'title' = 'Numbered one', 'pub 2 reveals challenge 1 (numbered beats pub-specific)'; end $$;
+insert into public.visits (team_id, pub_id, at) values (public.my_team(), 'p3', now() + interval '1 minute'), (public.my_team(), 'p4', now() + interval '2 minutes');
+do $$ begin assert public.get_challenge('p3') is null, 'pub 3 is not a challenge pub'; end $$;
+do $$ begin assert public.get_challenge('p4') ->> 'title' = 'Numbered two', 'pub 4 reveals challenge 2'; end $$;
+insert into public.visits (team_id, pub_id, at) values (public.my_team(), 'p5', now() + interval '3 minutes'), (public.my_team(), 'p6', now() + interval '4 minutes');
+do $$ begin assert public.get_challenge('p6') is null, 'no challenge after the last one (maxChallenges = 2)'; end $$;
+delete from public.visits where team_id = public.my_team() and pub_id in ('p3','p4','p5','p6');
 do $$ begin assert public.get_challenge('p9') is null, 'unvisited pub challenge stays hidden'; end $$;
 do $$ begin assert (select count(*) from public.challenges) = 0, 'players cannot read the challenges table'; end $$;
 do $$ begin assert (select count(*) from public.secret) = 0, 'players cannot read the secret'; end $$;
