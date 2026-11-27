@@ -144,12 +144,61 @@ select * from (values
 -- Helper functions
 -- ---------------------------------------------------------------
 -- Organiser = a real (non-anonymous) account with a confirmed email listed in admins.
+-- Organiser code: phones that entered the right code become organisers. Only the bcrypt hash is stored,
+-- and only the definer functions below touch these tables (RLS on, no policies).
+create extension if not exists pgcrypto with schema extensions;
+create table if not exists public.admin_code     (id int primary key default 1 check (id = 1), hash text);
+create table if not exists public.admin_devices  (user_id uuid primary key references auth.users(id) on delete cascade, at timestamptz not null default now());
+create table if not exists public.admin_attempts (user_id uuid not null, at timestamptz not null default now());
+alter table public.admin_code     enable row level security;
+alter table public.admin_devices  enable row level security;
+alter table public.admin_attempts enable row level security;
+
+-- Organiser = a phone that entered the organiser code, or a confirmed email account listed in admins.
 create or replace function public.is_admin() returns boolean
 language sql stable security definer set search_path = public as $$
-  select exists (
+  select exists (select 1 from public.admin_devices d where d.user_id = auth.uid())
+      or exists (
     select 1 from auth.users u join public.admins a on lower(a.email) = lower(u.email)
     where u.id = auth.uid() and u.email_confirmed_at is not null and coalesce(u.is_anonymous, false) = false
   );
+$$;
+
+-- Run once in the SQL Editor to set or change the code:  select public.set_admin_code('your code');
+-- Not callable from the app.
+create or replace function public.set_admin_code(p_code text) returns void
+language plpgsql security definer set search_path = public as $$
+begin
+  if length(trim(coalesce(p_code, ''))) < 4 then raise exception 'code_too_short'; end if;
+  insert into public.admin_code (id, hash) values (1, extensions.crypt(lower(trim(p_code)), extensions.gen_salt('bf')))
+  on conflict (id) do update set hash = excluded.hash;
+  delete from public.admin_devices;   -- a new code signs every organiser phone out
+end $$;
+revoke execute on function public.set_admin_code(text) from public, anon, authenticated;
+
+-- The app calls this with what the organiser typed. Five wrong tries locks that phone out for 10 minutes.
+create or replace function public.claim_admin(p_code text) returns boolean
+language plpgsql security definer set search_path = public as $$
+declare v_hash text;
+begin
+  if auth.uid() is null then raise exception 'not_signed_in'; end if;
+  if (select count(*) from public.admin_attempts where user_id = auth.uid() and at > now() - interval '10 minutes') >= 5 then
+    raise exception 'too_many_tries';
+  end if;
+  select hash into v_hash from public.admin_code where id = 1;
+  if v_hash is null then raise exception 'no_code_set'; end if;
+  if extensions.crypt(lower(trim(coalesce(p_code, ''))), v_hash) = v_hash then
+    insert into public.admin_devices (user_id) values (auth.uid()) on conflict do nothing;
+    delete from public.admin_attempts where user_id = auth.uid();
+    return true;
+  end if;
+  insert into public.admin_attempts (user_id) values (auth.uid());
+  return false;
+end $$;
+
+create or replace function public.release_admin() returns void
+language sql security definer set search_path = public as $$
+  delete from public.admin_devices where user_id = auth.uid();
 $$;
 
 -- A phone's team, once approved. A pending join request gives no access to anything.
@@ -414,9 +463,10 @@ create policy selfies_delete on storage.objects for delete to authenticated
   using (bucket_id = 'selfies' and (public.is_admin()
          or ((storage.foldername(name))[1] = public.my_team() and public.setting('state') = 'live')));
 
+grant execute on function public.claim_admin(text), public.release_admin() to authenticated;
+
 -- ---------------------------------------------------------------
--- Organiser login
---   1. Authentication → Users → Add user → Create new user: the organiser email and password, tick "Auto Confirm User".
---   2. Put that email here, un-comment, and run:
--- insert into public.admins (email) values ('organiser@example.com') on conflict do nothing;
+-- Organiser code: set it once here (never commit it to the repo). Un-comment, put your code in, run:
+-- select public.set_admin_code('your code here');
+-- Organisers then tap the account button in the app → "Organiser code".
 -- ---------------------------------------------------------------
