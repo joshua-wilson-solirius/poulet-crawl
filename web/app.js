@@ -16,7 +16,7 @@ const DEFAULT_TEAMS = [
   {id:"rangers", num:3,    name:"Free Rangers", color:"#12A594", members:["Hana","Ben","Zara"]},
   {id:"hens",    num:4,    name:"Hen Party",    color:"#8E4EC6", members:["Rosie","Kwame","Lily"]},
 ];
-const DEFAULT_SETTINGS = {interval:2, state:"setup", showBoard:false, buyIn:"£15", start:"", budget:0};
+const DEFAULT_SETTINGS = {interval:2, maxChallenges:3, state:"setup", showBoard:false, buyIn:"£15", start:"", budget:0};
 const PALETTE = ["#E5484D","#3E63DD","#12A594","#8E4EC6","#F76B15","#D6409F","#0090FF","#46A758","#E0A100","#6E56CF"];
 function defaultRules(){
   const ch=chicken();
@@ -24,7 +24,9 @@ function defaultRules(){
     {t:"The chicken flies first", b:`After the first round at ${CONFIG.meetPub}, the chicken (${ch.members.join(" & ")}) leaves with a 15-minute head start and hides in any pub inside the ${CONFIG.radiusMiles}-mile ring. Once they're in, they stay in.`},
     {t:"Hunt as a team", b:"Everyone else sets off in their teams. Stick together all night. No splitting up to cover more pubs."},
     {t:"A drink in every pub", b:"Every pub you walk into, each player buys and finishes a drink before you leave. A half or a soft drink counts. Check in on the app as you arrive."},
-    {t:`Every ${D.interval===2?"second":D.interval===1?"":"few"} pub is a challenge`.replace("  "," "), b:"On a challenge pub the app shows your task. Do it, then send a photo or video as proof. When the chicken approves it, your next clue unlocks."},
+    (()=>{const st=challengeStops(); const list=st?st.map(ordinalWord):null;
+      return {t:st?`${st.length} challenges along the way`:`Every ${D.interval===2?"second":"few"} pub is a challenge`,
+        b:`${list?`The ${list.slice(0,-1).join(", ")}${list.length>1?" and ":""}${list[list.length-1]} pubs you check into are challenge pubs.`:"Challenge pubs come up as you go."} The app shows your task. Do it, then send a photo or video as proof. When the chicken approves it, your next clue unlocks.`};})(),
     {t:"Found the chicken? Join the chicken", b:"Don't shout about it. Buy your drink, squeeze in quietly and let the chicken mark you found. You're hiding with them now, so no tipping off other teams."},
     {t:"Last team buys the round", b:"The game ends when the last team finds the pack, by now crammed into one pub. That team buys the chicken a drink and does a forfeit of Dom's choosing."},
   ];
@@ -148,7 +150,7 @@ function derive(){
   kitty.left=Math.round((kitty.total-kitty.spent)*100)/100;
   D={settings, teams, visits, subs, selfies, spends, kitty, unlocked, found, positions, board:R.board,
      challenges:R.challenges, pubinfo:R.pubinfo, secret:R.secret, members:R.members,
-     interval:Math.max(1,parseInt(settings.interval)||2)};
+     interval:Math.max(1,parseInt(settings.interval)||2), maxCh:Math.max(0,parseInt(settings.maxChallenges??3)||0)};
 }
 const hunters=()=>D.teams.filter(t=>!t.chicken);
 const chicken=()=>D.teams.find(t=>t.chicken)||D.teams[0];
@@ -162,7 +164,13 @@ const organiserOnly=()=>S.mode!=="local"&&S.me.isAdmin;
 const myTeamId=()=>{ if(isAdmin()&&S.viewAs) return S.viewAs; return R.myTeam&&teamById(R.myTeam)?R.myTeam:null; };
 const visitsOf=t=>D.visits[t]||[];
 const lastPubOf=t=>{const v=visitsOf(t); if(v.length) return pubById(v[v.length-1].pub); const p=D.positions[t]; return p?pubById(p.pub):null;};
-const isStop=i=>(i+1)%D.interval===0;
+const chNum=i=>(i+1)/D.interval;                                   // which challenge a visit index is (1, 2, 3 …)
+const isStop=i=>(i+1)%D.interval===0&&(!D.maxCh||chNum(i)<=D.maxCh);
+const challengeStops=()=>D.maxCh?Array.from({length:D.maxCh},(_,j)=>(j+1)*D.interval):null;
+const ordinalWord=n=>(["","1st","2nd","3rd"][n]||n+"th");
+/* challenge text: numbered challenge first, then a pub's own, then the default */
+const adminChallengeFor=(pubId,num)=>{const ok=c=>c&&(c.title||c.text); const n=num&&D.challenges["c"+num];
+  return ok(n)?n:ok(D.challenges[pubId])?D.challenges[pubId]:(ok(D.challenges._all)?D.challenges._all:null);};
 const subFor=(t,pub)=>D.subs.find(s=>s.team===t&&s.pub===pub);
 const selfieFor=(t,pub)=>D.selfies[t+"|"+pub]||null;
 const finished=()=>D.settings.state==="finished";
@@ -313,9 +321,12 @@ function LocalBackend(){
       if(cur){ if(name) cur.display_name=name; save(); return t.id; }
       const open=(db.settings.state||"setup")==="setup";   // teams lock once the game is live
       db.members.push({user_id:"me",team_id:t.id,display_name:name||null,joined_at:now(),approved:open}); if(open) db.myTeam=t.id; save(); return t.id; },
-    async checkIn(team,pub){ if((db.settings.state||"setup")!=="live") throw new Error("row-level security"); if(!db.visits.some(v=>v.team_id===team&&v.pub_id===pub)) db.visits.push({team_id:team,pub_id:pub,at:now()}); save(); },
+    async checkIn(team,pub){ if(!team) throw new Error("row-level security"); if((db.settings.state||"setup")!=="live") throw new Error("row-level security"); if(!db.visits.some(v=>v.team_id===team&&v.pub_id===pub)) db.visits.push({team_id:team,pub_id:pub,at:now()}); save(); },
     async undoVisit(team,pub){ const f=x=>!(x.team_id===team&&x.pub_id===pub); db.visits=db.visits.filter(f); db.selfies=db.selfies.filter(f); save(); },
-    async getChallenge(pub){ const c=db.challenges[pub]; return c&&(c.title||c.text)?c:(db.challenges._all||{title:"",text:""}); },
+    async getChallenge(pub){ const t=myTeamId(), v=db.visits.filter(x=>x.team_id===t).sort((a,b)=>ms(a.at)-ms(b.at)||(a.pub_id<b.pub_id?-1:1));
+      const i=v.findIndex(x=>x.pub_id===pub); if(i<0||!isStop(i)) return null;
+      const ok=c=>c&&(c.title||c.text), n=db.challenges["c"+chNum(i)];
+      return ok(n)?n:ok(db.challenges[pub])?db.challenges[pub]:(db.challenges._all||{title:"",text:""}); },
     async upload(team,pub,blob,type){ return {path:"demo/"+uid(),type,demo:true}; },
     async submit(team,pub,stop,media,note){ db.subs.push({id:uid(),team_id:team,pub_id:pub,stop,media,note,at:now(),status:"pending"}); save(); },
     async signUrls(){ return {}; },
@@ -370,8 +381,8 @@ function queueSign(b,p){ (signQ[b]=signQ[b]||new Set()).add(p); clearTimeout(sig
   catch(e){ console.warn(e); } },50); }
 
 /* challenges: players fetch theirs from the database only at a challenge pub */
-function challengeFor(pubId){
-  if(isAdmin()&&S.mode!=="local"&&!S.viewAs){ const c=D.challenges[pubId]; return c&&(c.title||c.text)?c:(D.challenges._all||null); }
+function challengeFor(pubId,num){
+  if(isAdmin()&&S.mode!=="local"&&!S.viewAs) return adminChallengeFor(pubId,num);
   if(S.chal[pubId]!==undefined) return S.chal[pubId];
   S.chal[pubId]=null; api.getChallenge(pubId).then(c=>{S.chal[pubId]=c||null; renderAll();}).catch(()=>{});
   return null;
@@ -444,6 +455,7 @@ function viewPlay(){
   const last=v.length?v[v.length-1]:null, lastIdx=n-1;
   const lastSub=last?subFor(tid,last.pub):null;
   const showChal=last&&isStop(lastIdx)&&!(lastSub&&lastSub.status==="approved");
+  const allChDone=D.maxCh&&Math.floor(n/k)>=D.maxCh&&!showChal;
   let h=S.viewAs?`<div class="banner yolk row"><span>Previewing <b>${esc(t.name)}</b>.</span><span class="spacer"></span><button class="btn sm" data-action="stopview">Stop preview</button></div>`:stateBanner();
   h+=`<div class="hero"><div class="row"><span class="sw" style="background:${t.color}"></span><span class="lbl">Team ${t.num??""}</span><span class="spacer"></span>${found?'<span class="pill good">Found the chicken</span>':""}</div>
     <h1>${esc(t.name)}</h1>
@@ -455,14 +467,14 @@ function viewPlay(){
     h+=`<div class="card"><h2>You found them. Now you're the chicken too.</h2><p class="muted">Stay put, keep it quiet, and enjoy watching the others search.</p></div>`;
   } else {
     h+=`<div class="card"><div><h2>${last?`At ${esc(pubById(last.pub).name)}?`:"Ready when you are"}</h2><p class="muted sm">${last?`Checked in ${ago(last.at)}. Moving on? Check in at the next pub.`:`Everyone starts at ${esc(CONFIG.meetPub)}. Check in when you walk into each pub.`}</p></div>
-      <div class="progress" aria-label="Progress to next challenge pub">${Array.from({length:k},(_,i)=>`<i class="${i<(n%k||(n&&showChal?k:0))?"on":""}"></i>`).join("")}</div>
+      ${allChDone?`<p class="sm muted">That's all ${D.maxCh} challenges. Use your clues and find the chicken.</p>`:`<div class="progress" aria-label="Progress to next challenge pub">${Array.from({length:k},(_,i)=>`<i class="${i<(n%k||(n&&showChal?k:0))?"on":""}"></i>`).join("")}</div>`}
       <button class="btn primary block" data-action="checkin" ${live()||S.viewAs?"":"disabled"}>${ICON.pin} ${live()||S.viewAs?"Check in to a pub":"Check-ins open when the game starts"}</button></div>`;
     if(showChal) h+=challengeCard(tid,last.pub,lastIdx);
   }
   h+=installCard();
   h+=`<div class="card"><div class="row"><h2>Clues</h2><span class="spacer"></span><span class="sm muted">${clues.length} unlocked</span></div>
     ${clues.slice().reverse().map(c=>`<div class="clue"><div class="n">${c.n}</div><div><p>${esc(c.text)}</p><span class="sm muted">Unlocked ${hhmm(c.at)}${c.pub&&pubById(c.pub)?` · from ${esc(pubById(c.pub).name)}`:""}</span></div></div>`).join("")}
-    <div class="clue locked"><div class="n">${clues.length+1}</div><div><p>Locked</p><span class="sm muted">Finish the challenge at your next challenge pub and send evidence. The chicken unlocks it.</span></div></div>
+    ${D.maxCh&&clues.length>=D.maxCh?"":`<div class="clue locked"><div class="n">${clues.length+1}</div><div><p>Locked</p><span class="sm muted">Finish the challenge at your next challenge pub and send evidence. The chicken unlocks it.</span></div></div>`}
   </div>`;
   h+=`<div class="card"><h2>Your crawl</h2>${v.length?`<div class="timeline">${v.slice().reverse().map((x,ri)=>{const i=v.length-1-ri,p=pubById(x.pub),st=isStop(i),s=st?subFor(tid,x.pub):null;
       const done=s&&s.status==="approved", inline=ri===0&&showChal;
@@ -565,9 +577,9 @@ function gallerySection(){
 
 function statusPill(s){if(!s)return `<span class="pill">To do</span>`;return s.status==="approved"?`<span class="pill good">Clue ${s.clue||""} unlocked</span>`:s.status==="rejected"?`<span class="pill bad">Try again</span>`:`<span class="pill yolk">With the chicken</span>`;}
 function challengeCard(tid,pubId,i){
-  const c=challengeFor(pubId), s=subFor(tid,pubId), dk=tid+"|"+pubId, dr=S.draft[dk]||{files:[],note:""};
+  const num=chNum(i), c=challengeFor(pubId,num), s=subFor(tid,pubId), dk=tid+"|"+pubId, dr=S.draft[dk]||{files:[],note:""};
   const canSend=(live()||S.mode==="local")&&!S.viewAs;
-  return `<div class="card chal"><div class="row"><span class="lbl" style="color:var(--yolk-ink)">Challenge pub · stop ${i+1}</span><span class="spacer"></span>${statusPill(s)}</div>
+  return `<div class="card chal"><div class="row"><span class="lbl" style="color:var(--yolk-ink)">Challenge ${num}${D.maxCh?` of ${D.maxCh}`:""} · pub ${i+1}</span><span class="spacer"></span>${statusPill(s)}</div>
     <div class="t">${c&&c.title?esc(c.title):"Your challenge"}</div>
     <p>${c&&c.text?esc(c.text):`The chicken hasn't posted this challenge yet. Message ${esc(CONFIG.hosts)} for it, then send your evidence here.`}</p>
     ${s&&s.status==="pending"?`<div class="banner">Evidence sent ${ago(s.at)}. Hang tight while the chicken checks it. Your clue appears here as soon as they approve.</div>`:
@@ -780,7 +792,7 @@ function adminRequests(){
 }
 function adminReview(){
   const p=pending(), done=D.subs.filter(s=>s.status!=="pending").slice(0,12);
-  const subCard=s=>{const t=teamOr(s.team), pub=pubById(s.pub), c=D.challenges[s.pub]||D.challenges._all, n=(D.unlocked[s.team]||[]).length;
+  const subCard=s=>{const t=teamOr(s.team), pub=pubById(s.pub), c=adminChallengeFor(s.pub,s.stop/D.interval), n=(D.unlocked[s.team]||[]).length;
     const nextClue=(D.secret.clues[n]||"").trim()||autoClue(n,pub);
     return `<div class="card sub"><div class="row">${dot(t.color,14)}<h3>${esc(t.name)}</h3><span class="spacer"></span><span class="sm muted">${ago(s.at)}</span></div>
       <div class="sm"><b>${esc(pub?pub.name:"?")}</b> · stop ${s.stop}${c&&c.title?` · ${esc(c.title)}`:""}</div>
@@ -829,6 +841,7 @@ function adminSetup(){
         <div class="field"><label for="set-buyIn">Buy-in</label><input type="text" id="set-buyIn" value="${esc(D.settings.buyIn||"")}" placeholder="£15"></div>
         <div class="field"><label for="set-start">Start time at ${esc(CONFIG.meetPub)}</label><input type="text" id="set-start" value="${esc(D.settings.start||"")}" placeholder="e.g. Sat 6 Dec, 2pm"></div>
         <div class="field"><label for="set-int">Challenge every how many pubs?</label><input type="number" id="set-int" min="1" max="6" value="${D.interval}"></div>
+        <div class="field"><label for="set-max">How many challenges?</label><input type="number" id="set-max" min="0" max="10" value="${D.maxCh}"><span class="sm muted">0 means no limit.</span></div>
       </div>
       <div><button class="btn primary" data-action="savesettings">Save settings</button></div></div>
     ${adminKitty()}
@@ -860,21 +873,21 @@ function adminClues(){
       ${clues.map((c,i)=>`<div class="clueedit"><span class="n">${i+1}</span><div class="field"><textarea data-clue="${i}" aria-label="Clue ${i+1}" placeholder="Auto: ${esc(autoClue(i,null))}">${esc(c)}</textarea></div><button class="btn sm ghost" data-action="delclue" data-i="${i}" aria-label="Remove clue ${i+1}">Remove</button></div>`).join("")}
       <div><button class="btn primary" data-action="saveclues">Save clues</button></div></div>`;
 }
-/* every pub folds away; only the one being edited is open */
+/* challenges go by number: a team's 1st challenge pub gets challenge 1, and so on */
 function adminChallenges(){
   const q=(S.cq||"").toLowerCase(), list=PUBS.filter(p=>!q||p.name.toLowerCase().includes(q));
-  const all=D.challenges._all||{}, setN=PUBS.filter(p=>{const c=D.challenges[p.id];return c&&(c.title||c.text);}).length;
-  return `<div class="card"><h2>Default challenge</h2><p class="sm muted">Used at any challenge pub that doesn't have its own. Teams only see a challenge once they reach that challenge pub.</p>
-      <div class="field"><label for="ch-_all-t">Title</label><input type="text" id="ch-_all-t" value="${esc(all.title||"")}" placeholder="e.g. Pub selfie"></div>
-      <div class="field"><label for="ch-_all-x">What they have to do</label><textarea id="ch-_all-x" placeholder="e.g. Get a selfie with the bar staff">${esc(all.text||"")}</textarea></div>
-      <div><button class="btn primary" data-action="savechal" data-pub="_all">Save default</button></div></div>
-    <div class="card"><div class="row"><h2>Pubs</h2><span class="spacer"></span><span class="sm muted">${setN} of ${PUBS.length} have their own challenge</span></div>
+  const count=D.maxCh||3, stops=Array.from({length:count},(_,j)=>(j+1)*D.interval);
+  return `<div class="card"><h2>Challenges</h2><p class="sm muted">Teams get challenge 1 at the ${ordinalWord(stops[0])} pub they check into${count>1?`, challenge 2 at the ${ordinalWord(stops[1])}`:""}${count>2?", and so on":""}. They only see each one when they get there. Change how many in Setup.</p>
+      ${stops.map((st,j)=>{const id="c"+(j+1), c=D.challenges[id]||{};
+        return `<div class="chalrow"><div class="row"><span class="pill yolk">Challenge ${j+1}</span><span class="sm muted">${ordinalWord(st)} pub</span><span class="spacer"></span>${c.title||c.text?'<span class="pill good">Set</span>':""}</div>
+          <input type="text" id="ch-${id}-t" value="${esc(c.title||"")}" placeholder="Title" aria-label="Challenge ${j+1} title">
+          <textarea id="ch-${id}-x" placeholder="What they have to do and send" aria-label="Challenge ${j+1} details">${esc(c.text||"")}</textarea>
+          <div><button class="btn sm primary" data-action="savechal" data-pub="${id}">Save challenge ${j+1}</button></div></div>`;}).join("")}</div>
+    <div class="card"><div class="row"><h2>Pub info</h2><span class="spacer"></span><span class="sm muted">Prices, hours and notes players see on the map</span></div>
       <input type="search" id="chalq" placeholder="Find a pub" value="${esc(S.cq||"")}" aria-label="Find a pub">
-      <div>${list.map(p=>{const c=D.challenges[p.id]||{}, pi=D.pubinfo[p.id]||{};
-        return `<details class="pubedit" data-pub="${p.id}" ${S.openPub===p.id?"open":""}><summary><b>${esc(p.name)}</b><span class="sm muted">${fmtMi(p.d)}</span><span class="spacer"></span>${c.title||c.text?'<span class="pill good">Challenge</span>':""}</summary>
+      <div>${list.map(p=>{const pi=D.pubinfo[p.id]||{};
+        return `<details class="pubedit" data-pub="${p.id}" ${S.openPub===p.id?"open":""}><summary><b>${esc(p.name)}</b><span class="sm muted">${fmtMi(p.d)}</span><span class="spacer"></span>${pi.price||pi.hours||pi.note?'<span class="pill good">Info</span>':""}</summary>
         <div class="chalrow">
-        <input type="text" id="ch-${p.id}-t" value="${esc(c.title||"")}" placeholder="Challenge title" aria-label="${esc(p.name)} challenge title">
-        <textarea id="ch-${p.id}-x" placeholder="What they have to do" aria-label="${esc(p.name)} challenge">${esc(c.text||"")}</textarea>
         <div class="pinfo"><div class="field"><label for="pi-${p.id}-p">Average pint</label><input type="text" id="pi-${p.id}-p" value="${esc(pi.price||"")}" placeholder="e.g. 6.40"></div>
           <div class="field"><label for="pi-${p.id}-h">Opening hours${p.hours?" (from OpenStreetMap)":""}</label><input type="text" id="pi-${p.id}-h" value="${esc(pi.hours||"")}" placeholder="${esc(p.hours||"e.g. Mo-Th 12:00-23:00; Fr-Sa 12:00-00:00; Su 12:00-22:30")}"></div></div>
         <input type="text" id="pi-${p.id}-n" value="${esc(pi.note||"")}" placeholder="Note for players, e.g. Pool table upstairs" aria-label="${esc(p.name)} note">
@@ -988,14 +1001,15 @@ document.addEventListener("click",async e=>{
     case "addclue": await saveSecret({clues:readClues().concat([""])}).catch(()=>{}); break;
     case "delclue": { const c=readClues(); c.splice(+a.dataset.i,1); await saveSecret({clues:c}).catch(()=>{}); break; }
     case "saveclues": await saveSecret({clues:readClues()}).then(()=>toast("Clues saved.")).catch(()=>{}); break;
-    case "savechal": { const id=a.dataset.pub, t=document.getElementById(`ch-${id}-t`).value.trim(), x=document.getElementById(`ch-${id}-x`).value.trim();
-      const jobs=[api.saveChallenge(id,(t||x)?{title:t,text:x}:null)];
+    case "savechal": { const id=a.dataset.pub, te=document.getElementById(`ch-${id}-t`), xe=document.getElementById(`ch-${id}-x`), jobs=[];
+      if(te&&xe){const t=te.value.trim(), x=xe.value.trim(); jobs.push(api.saveChallenge(id,(t||x)?{title:t,text:x}:null));}
       const pp=document.getElementById(`pi-${id}-p`);
       if(pp){const inf={price:pp.value.trim(),hours:document.getElementById(`pi-${id}-h`).value.trim(),note:document.getElementById(`pi-${id}-n`).value.trim()};
         jobs.push(api.savePubInfo(id,(inf.price||inf.hours||inf.note)?inf:null));}
       await act(()=>Promise.all(jobs),"Saved.").catch(()=>{}); break; }
     case "savesettings": await saveSettings({buyIn:document.getElementById("set-buyIn").value.trim(),start:document.getElementById("set-start").value.trim(),
-      interval:Math.max(1,Math.min(6,parseInt(document.getElementById("set-int").value)||2))}).then(()=>toast("Settings saved.")).catch(()=>{}); break;
+      interval:Math.max(1,Math.min(6,parseInt(document.getElementById("set-int").value)||2)),
+      maxChallenges:Math.max(0,Math.min(10,parseInt(document.getElementById("set-max").value)||0))}).then(()=>toast("Settings saved.")).catch(()=>{}); break;
     case "addteam": { const teams=readTeams(); const used=new Set(teams.map(t=>t.color));
       teams.push({id:"t"+uid().slice(0,8),chicken:false,num:teams.filter(t=>!t.chicken).length+1,sort:teams.length,name:"New team",color:PALETTE.find(c=>!used.has(c))||PALETTE[0],members:[]});
       await act(()=>api.saveTeams(teams),"Team added.").catch(()=>{}); break; }
