@@ -119,7 +119,7 @@ create table if not exists public.found (
 -- Seed data (only fills empty tables)
 -- ---------------------------------------------------------------
 insert into public.settings (id, data) values
-  (1, '{"interval":2,"state":"setup","showOthers":false,"showBoard":false,"buyIn":"£15","start":""}')
+  (1, '{"interval":2,"maxChallenges":3,"state":"setup","showOthers":false,"showBoard":false,"buyIn":"£15","start":""}')
 on conflict (id) do nothing;
 insert into public.secret (id) values (1) on conflict (id) do nothing;
 
@@ -184,25 +184,33 @@ begin
   return v_team;
 end $$;
 
--- A team only sees a pub's challenge once it has checked in there and that visit is a challenge stop.
+-- A team only sees a challenge once it checks in at one of its challenge pubs (every `interval`-th pub,
+-- up to `maxChallenges` of them; 0 = no limit). Challenges go by number: 'c1', 'c2' … in public.challenges,
+-- then a pub's own challenge, then the '_all' default.
 create or replace function public.get_challenge(p_pub text) returns json
 language plpgsql stable security definer set search_path = public as $$
-declare v_team text := public.my_team(); v_k int; v_rn int; v_title text; v_body text;
+declare v_team text := public.my_team(); v_k int; v_max int; v_rn int; v_num int; v_title text; v_body text;
 begin
   if not public.is_admin() then
     if v_team is null then return null; end if;
-    v_k := greatest(1, coalesce(nullif(public.setting('interval'), '')::int, 2));
+    v_k   := greatest(1, coalesce(nullif(public.setting('interval'), '')::int, 2));
+    v_max := greatest(0, coalesce(nullif(public.setting('maxChallenges'), '')::int, 3));
     select r into v_rn from (
       select pub_id, row_number() over (order by at, pub_id) as r from public.visits where team_id = v_team
     ) v where v.pub_id = p_pub;
     if v_rn is null or v_rn % v_k <> 0 then return null; end if;
+    v_num := v_rn / v_k;
+    if v_max > 0 and v_num > v_max then return null; end if;
+    select title, body into v_title, v_body from public.challenges
+     where pub_id = 'c' || v_num and (coalesce(title, '') <> '' or coalesce(body, '') <> '');
+    if found then return json_build_object('title', v_title, 'body', v_body, 'num', v_num); end if;
   end if;
   select title, body into v_title, v_body from public.challenges
    where pub_id = p_pub and (coalesce(title, '') <> '' or coalesce(body, '') <> '');
   if not found then
     select title, body into v_title, v_body from public.challenges where pub_id = '_all';
   end if;
-  return json_build_object('title', v_title, 'body', v_body);
+  return json_build_object('title', v_title, 'body', v_body, 'num', v_num);
 end $$;
 
 -- Where teams were last seen: your own team only. Organisers see every team.
