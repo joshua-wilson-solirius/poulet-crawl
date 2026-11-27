@@ -11,10 +11,10 @@ const CONFIG = {
 };
 const DEFAULT_TEAMS = [
   {id:"poulet",  num:null, name:"Le Poulet",    color:"#E0A100", chicken:true, members:["Dom","Josh"]},
-  {id:"coqs",    num:1,    name:"Les Coqs",     color:"#E5484D", members:["Sam","Jordan","Chloe"]},
-  {id:"nuggets", num:2,    name:"The Nuggets",  color:"#3E63DD", members:["Marcus","Ellie","Tom"]},
-  {id:"rangers", num:3,    name:"Free Rangers", color:"#12A594", members:["Hana","Ben","Zara"]},
-  {id:"hens",    num:4,    name:"Hen Party",    color:"#8E4EC6", members:["Rosie","Kwame","Lily"]},
+  {id:"coqs",    num:1,    name:"Les Coqs",     color:"#E5484D", members:[]},
+  {id:"nuggets", num:2,    name:"The Nuggets",  color:"#3E63DD", members:[]},
+  {id:"rangers", num:3,    name:"Free Rangers", color:"#12A594", members:[]},
+  {id:"hens",    num:4,    name:"Hen Party",    color:"#8E4EC6", members:[]},
 ];
 const DEFAULT_SETTINGS = {interval:2, maxChallenges:3, state:"setup", showBoard:false, buyIn:"£15", start:"", budget:0};
 /* built-in challenges, used until an organiser saves their own in Chicken HQ → Content */
@@ -144,9 +144,10 @@ const S = {mode:"connecting", loaded:false, me:{email:null,isAdmin:false,userId:
 
 /* =================== derived state =================== */
 let D = {};
+const rosterOf=tid=>(R.roster||[]).filter(r=>r.team_id===tid).map(r=>r.name);
 function derive(){
   const settings=Object.assign({}, DEFAULT_SETTINGS, R.settings||{});
-  const teams=(R.teams.length?R.teams.slice().sort((a,b)=>a.sort-b.sort).map(t=>({id:t.id,num:t.num,name:t.name,color:t.color,chicken:t.is_chicken,members:R.rosters[t.id]||[]})):DEFAULT_TEAMS.map(t=>Object.assign({},t)));
+  const teams=(R.teams.length?R.teams.slice().sort((a,b)=>a.sort-b.sort).map(t=>({id:t.id,num:t.num,name:t.name,color:t.color,chicken:t.is_chicken,members:t.is_chicken?(R.rosters[t.id]||[]):rosterOf(t.id)})):DEFAULT_TEAMS.map(t=>Object.assign({},t,{members:t.chicken?t.members:rosterOf(t.id)})));
   const visits={}; R.visits.forEach(v=>{(visits[v.team_id]=visits[v.team_id]||[]).push({team:v.team_id,pub:v.pub_id,at:ms(v.at)});});
   Object.values(visits).forEach(a=>a.sort((x,y)=>x.at-y.at||(x.pub<y.pub?-1:1)));
   const subs=R.subs.map(s=>({_id:s.id,team:s.team_id,pub:s.pub_id,stop:s.stop,media:s.media||[],note:s.note,at:ms(s.at),status:s.status,reviewNote:s.review_note,clue:s.clue_no})).sort((a,b)=>b.at-a.at);
@@ -225,6 +226,7 @@ function SupabaseBackend(client){
         teams:client.from("teams").select("*"),
         pubinfo:client.from("pub_info").select("*"),
         spends:client.from("spends").select("*"),
+        roster:client.rpc("roster"),
       };
       if(signedIn){
         Object.assign(jobs,{
@@ -248,6 +250,7 @@ function SupabaseBackend(client){
       R.teams=out.teams||[];
       R.pubinfo={}; (out.pubinfo||[]).forEach(p=>R.pubinfo[p.pub_id]={price:p.price||"",hours:p.hours||"",note:p.note||""});
       R.rosters={}; (out.rosters||[]).forEach(r=>R.rosters[r.team_id]=r.names||[]);
+      R.roster=out.roster||[];
       R.members=out.members||[];
       const mine=R.members.find(m=>m.user_id===S.me.userId);
       R.myTeam=mine&&mine.approved!==false?mine.team_id:null; R.waiting=mine&&mine.approved===false?mine.team_id:null;
@@ -317,13 +320,14 @@ function SupabaseBackend(client){
 function LocalBackend(){
   const K="demo";
   const db=Object.assign({settings:{}, teams:null, rosters:{}, members:[], pubinfo:{}, challenges:{}, secret:{hideout:null,clues:[]}, visits:[], subs:[], selfies:[], spends:[], unlocked:[], found:[], myTeam:null}, ls.get(K)||{});
-  if(!db.teams){ db.teams=DEFAULT_TEAMS.map((t,i)=>({id:t.id,num:t.num,name:t.name,color:t.color,is_chicken:!!t.chicken,sort:i})); DEFAULT_TEAMS.forEach(t=>db.rosters[t.id]=t.members.slice()); }
+  if(!db.teams){ db.teams=DEFAULT_TEAMS.map((t,i)=>({id:t.id,num:t.num,name:t.name,color:t.color,is_chicken:!!t.chicken,sort:i})); DEFAULT_TEAMS.filter(t=>t.chicken).forEach(t=>db.rosters[t.id]=t.members.slice()); }
   const save=()=>ls.set(K,db), now=()=>new Date().toISOString();
   const nextN=t=>db.unlocked.filter(u=>u.team_id===t).reduce((m,u)=>Math.max(m,u.n),0)+1;
   const clueText=(n,auto)=>((db.secret.clues[n-1]||"").trim())||auto||"Ask the chicken for a hint.";
   return {
     async load(){
-      R.settings=db.settings; R.teams=db.teams; R.rosters=db.rosters; R.members=db.members; R.pubinfo=db.pubinfo; R.challenges=db.challenges;
+      R.settings=db.settings; R.teams=db.teams; R.rosters=db.rosters; R.members=db.members;
+      R.roster=db.members.filter(m=>m.approved!==false).sort((a,b)=>ms(a.joined_at)-ms(b.joined_at)).map(m=>({team_id:m.team_id,name:(m.display_name||"").trim()||"Player",joined_at:m.joined_at})); R.pubinfo=db.pubinfo; R.challenges=db.challenges;
       R.secret=db.secret; R.visits=db.visits; R.subs=db.subs; R.selfies=db.selfies; R.spends=db.spends; R.unlocked=db.unlocked; R.found=db.found; R.myTeam=db.myTeam; R.admins=[];
       R.waiting=(db.members.find(m=>m.user_id==="me"&&m.approved===false)||{}).team_id||null;
       const pos={}; db.visits.forEach(v=>{ if(!pos[v.team_id]||ms(v.at)>ms(pos[v.team_id].at)) pos[v.team_id]=v; });
@@ -446,6 +450,10 @@ function accountSheet(){
 const meetLine=()=>`Meet at <b>${esc(CONFIG.meetPub)}</b>, ${esc(CONFIG.meetAddr)}${D.settings.start?`, <b>${esc(D.settings.start)}</b>`:""}.`;
 function stateBanner(){
   const st=D.settings.state;
+  if(S.mode==="local") return `<div class="banner"><b>Test mode.</b> This phone isn't connected to the shared game yet, so nobody else sees what you do here.</div>`+stateBannerGame(st);
+  return stateBannerGame(st);
+}
+function stateBannerGame(st){
   if(st==="setup") return `<div class="banner yolk">${meetLine()} Check-ins open when the chicken starts the game.</div>`;
   if(st==="finished") return `<div class="banner"><b>Game over.</b> Final standings and every team's selfies are on the <a href="#teams">Teams</a> tab.</div>`;
   return "";
@@ -460,7 +468,7 @@ function joinScreen(){
   return `<div><h1>Bonsoir! Which team are you?</h1><p class="muted" style="margin-top:6px">Type your team number. You only do this once on this phone.</p></div>
     ${locked?`<div class="banner yolk">The game has started, so teams are locked. You can still ask to join, and the chicken will let you in.</div>`:stateBanner()}
     <div class="card"><div class="field"><label for="joinnum">Team number</label><input type="number" id="joinnum" inputmode="numeric" min="1" placeholder="e.g. 1" autocomplete="off" style="font-size:28px;font-weight:700;text-align:center"></div>
-      <div class="field"><label for="joinname">Your name (optional)</label><input type="text" id="joinname" placeholder="So the chicken knows who sent what" autocomplete="given-name"></div>
+      <div class="field"><label for="joinname">Your name</label><input type="text" id="joinname" placeholder="Shown on your team" autocomplete="given-name" maxlength="24"></div>
       <button class="btn primary block" data-action="dojoin">${locked?"Ask to join":"Join team"}</button>
       <p class="sm muted">Not sure of your number? Ask ${esc(CONFIG.hosts)}.</p></div>
     ${kittyCard()}`;
@@ -870,11 +878,11 @@ function adminSetup(){
       <div><button class="btn primary" data-action="savesettings">Save settings</button></div></div>
     ${adminKitty()}
     <div class="card"><div class="row"><h2>Teams</h2><span class="spacer"></span><button class="btn sm" data-action="addteam">Add team</button></div>
-      <p class="sm muted">The first team is the chicken. The rest are numbered 1, 2, 3… in this order, and that number is how players join. Member names: one per line or separated by commas.</p>
+      <p class="sm muted">The first team is the chicken. The rest are numbered 1, 2, 3… in this order, and that number is how players join. Teams fill up with the names players type when they join.</p>
       ${D.teams.map((t,i)=>`<div class="chalrow"><div class="row"><span class="pill" style="min-width:64px;justify-content:center">${t.chicken?"Chicken":"Team "+i}</span><input type="text" id="tn-${i}" value="${esc(t.name)}" style="flex:1;min-width:150px" aria-label="Team name">
           <select id="tc-${i}" style="width:auto" aria-label="Team colour">${PALETTE.concat(PALETTE.includes(t.color)?[]:[t.color]).map(c=>`<option value="${c}" ${c===t.color?"selected":""}>${c}</option>`).join("")}</select>
           ${dot(t.color,20)}${t.chicken?"":`<button class="btn sm ghost danger" data-action="delteam" data-id="${t.id}">Remove</button>`}</div>
-        <textarea id="tm-${i}" aria-label="${esc(t.name)} members">${esc(t.members.join(", "))}</textarea></div>`).join("")}
+        ${t.chicken?`<textarea id="tm-${i}" aria-label="Chicken names">${esc(t.members.join(", "))}</textarea>`:`<p class="sm muted">${t.members.length?esc(t.members.join(" · ")):"Nobody yet. Players join with number "+i+"."}</p>`}</div>`).join("")}
       <div><button class="btn primary" data-action="saveteams">Save teams</button></div></div>
     <div class="card"><h2>Players</h2><p class="sm muted">Phones that have joined a team. Move someone who joined the wrong team, or remove them so they can join again. Once the game is live, new phones need your approval on HQ → Live.</p>
       ${joined.length?hunters().map(t=>(byTeam[t.id]||[]).length?`<div class="lbl" style="margin-top:6px">${esc(teamLabel(t))}</div>${byTeam[t.id].map(m=>`<div class="trow">${dot(t.color)}<div style="min-width:0"><b>${esc(m.display_name||"Unnamed phone")}</b><div class="sm muted">Joined ${ago(m.joined_at)}</div></div>
@@ -957,7 +965,7 @@ function readTeams(){
     return {id:t.id,chicken:chickenTeam,num:chickenTeam?null:++n,sort:i,
       name:((document.getElementById("tn-"+i)||{}).value||t.name).trim()||t.name,
       color:(document.getElementById("tc-"+i)||{}).value||t.color,
-      members:((document.getElementById("tm-"+i)||{}).value??t.members.join(", ")).split(/[,\n]/).map(s=>s.trim()).filter(Boolean)};});
+      members:chickenTeam?((document.getElementById("tm-"+i)||{}).value??t.members.join(", ")).split(/[,\n]/).map(s=>s.trim()).filter(Boolean):[]};});
 }
 function readRules(){return Array.from(document.querySelectorAll("[data-rule-t]")).map(el=>({t:el.value.trim(),b:(document.querySelector(`[data-rule-b="${el.dataset.ruleT}"]`)||{}).value||""})).filter(r=>r.t||r.b.trim());}
 const saveSettings=patch=>act(()=>api.saveSettings(Object.assign({},R.settings,patch)));
@@ -975,9 +983,10 @@ document.addEventListener("click",async e=>{
     case "dojoin": {
       const num=parseInt((document.getElementById("joinnum")||{}).value,10), name=((document.getElementById("joinname")||{}).value||"").trim();
       if(!num){toast("Type your team number.");break;}
+      if(!name){toast("Type your name so your team knows it's you.");document.getElementById("joinname").focus();break;}
       a.disabled=true; a.textContent="Joining…";
       const label=a.textContent;
-      try{ const t=await act(()=>api.join(num,name)); toast(R.waiting?"Request sent. The chicken will let you in.":`You're on ${(teamById(t)||{}).name||"your team"}. Allez!`); }
+      try{ const t=await act(()=>api.join(num,name)); if(document.activeElement) document.activeElement.blur(); renderAll(); toast(R.waiting?"Request sent. The chicken will let you in.":`You're on ${(teamById(t)||{}).name||"your team"}. Allez!`); }
       catch(err){ a.disabled=false; a.textContent=label; }
       break; }
     case "viewas": S.viewAs=a.dataset.team; S.chal={}; closeSheet(); location.hash="play"; renderAll(); break;
@@ -1206,7 +1215,7 @@ function subscribe(){
         else if(ev==="SIGNED_IN"&&S.me.email&&!S.me.isAdmin) toast("Signed in, but this email isn't on the organiser list."); });
     }
   });
-  setInterval(()=>{ if(document.visibilityState==="visible"&&D.settings.showBoard) refresh(); },45000);
+  setInterval(()=>{ if(document.visibilityState==="visible") refresh(); },45000);   // other teams' names and the leaderboard aren't pushed live to players
   document.addEventListener("visibilitychange",()=>{ if(document.visibilityState==="visible") refresh(); });
 })();
 if("serviceWorker" in navigator && location.protocol==="https:") navigator.serviceWorker.register("sw.js").catch(()=>{});
