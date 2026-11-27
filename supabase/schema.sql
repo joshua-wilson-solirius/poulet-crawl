@@ -190,6 +190,7 @@ begin
   if extensions.crypt(lower(trim(coalesce(p_code, ''))), v_hash) = v_hash then
     insert into public.admin_devices (user_id) values (auth.uid()) on conflict do nothing;
     delete from public.admin_attempts where user_id = auth.uid();
+    delete from public.team_members where user_id = auth.uid();   -- organisers aren't on a team
     return true;
   end if;
   insert into public.admin_attempts (user_id) values (auth.uid());
@@ -200,6 +201,31 @@ create or replace function public.release_admin() returns void
 language sql security definer set search_path = public as $$
   delete from public.admin_devices where user_id = auth.uid();
 $$;
+
+-- "Log out" on a phone: leave its team (or cancel a join request).
+create or replace function public.leave_team() returns void
+language sql security definer set search_path = public as $$
+  delete from public.team_members where user_id = auth.uid();
+$$;
+
+-- Organisers: start the game again from scratch. Clears every check-in, piece of evidence, selfie, clue,
+-- found mark, kitty spend and team membership, and puts the game back to Not started.
+-- Keeps teams, challenges, clues, hideout, pub info, rules, settings and the organiser code.
+-- (Uploaded photo files stay in storage; delete them in Storage if you want the space back.)
+create or replace function public.reset_game() returns void
+language plpgsql security definer set search_path = public as $$
+begin
+  if not public.is_admin() then raise exception 'admins_only'; end if;
+  delete from public.unlocked    where true;
+  delete from public.submissions where true;
+  delete from public.selfies     where true;
+  delete from public.visits      where true;
+  delete from public.found       where true;
+  delete from public.spends      where true;
+  delete from public.team_members where true;
+  delete from public.admin_attempts where true;
+  update public.settings set data = data || '{"state":"setup"}', updated_at = now() where id = 1;
+end $$;
 
 -- A phone's team, once approved. A pending join request gives no access to anything.
 create or replace function public.my_team() returns text
@@ -463,7 +489,7 @@ create policy selfies_delete on storage.objects for delete to authenticated
   using (bucket_id = 'selfies' and (public.is_admin()
          or ((storage.foldername(name))[1] = public.my_team() and public.setting('state') = 'live')));
 
-grant execute on function public.claim_admin(text), public.release_admin() to authenticated;
+grant execute on function public.claim_admin(text), public.release_admin(), public.leave_team(), public.reset_game() to authenticated;
 
 -- ---------------------------------------------------------------
 -- Organiser code: set it once here (never commit it to the repo). Un-comment, put your code in, run:
