@@ -1,5 +1,5 @@
 /* Offline shell: the app opens even with no signal. Game data always comes live from Supabase. */
-const VERSION = "poulet-v7";
+const VERSION = "poulet-v8";
 const SHELL = ["./", "index.html", "config.js", "data.js", "app.js", "manifest.webmanifest", "icons/icon.svg", "icons/icon-192.png",
   "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css",
   "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js",
