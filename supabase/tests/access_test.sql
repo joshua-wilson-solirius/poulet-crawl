@@ -119,7 +119,9 @@ select pg_temp.act_as('00000000-0000-0000-0000-0000000000b2');
 do $$ begin assert public.my_team() = (select id from public.teams where num = 2), 'player 2 is on team 2'; end $$;
 do $$ begin assert (select count(*) from public.visits) = 0, 'other team visits hidden'; end $$;
 do $$ begin assert (select count(*) from public.submissions) = 0, 'other team evidence hidden'; end $$;
-do $$ begin assert (select count(*) from public.team_rosters) = 1, 'only own roster visible'; end $$;
+do $$ begin assert (select count(*) from public.team_rosters r join public.teams t on t.id = r.team_id
+                    where r.team_id <> public.my_team() and not t.is_chicken) = 0, 'other hunting teams'' typed rosters stay hidden'; end $$;
+do $$ begin assert exists (select 1 from public.team_rosters r join public.teams t on t.id = r.team_id where t.is_chicken), 'the chicken''s names are visible'; end $$;
 do $$ begin assert (select count(*) from public.team_members) = 1, 'only own team members visible'; end $$;
 do $$ begin assert (select count(*) from public.roster()) >= 2, 'everyone sees team rosters (names only)'; end $$;
 do $$ begin assert exists (select 1 from public.roster() where name = 'Pat'), 'a joined player''s name appears in the roster'; end $$;
@@ -266,15 +268,6 @@ do $$ begin
   exception when others then if sqlerrm like 'FAIL%' then raise; end if; end;
 end $$;
 
--- ---------- organiser resets the game ----------
-select pg_temp.as_admin_db();
-select pg_temp.act_as('00000000-0000-0000-0000-0000000000a1');
-select public.reset_game();
-do $$ begin assert (select count(*) from public.visits) = 0 and (select count(*) from public.submissions) = 0
-             and (select count(*) from public.unlocked) = 0 and (select count(*) from public.team_members) = 0, 'reset clears play data and teams'; end $$;
-do $$ begin assert (select data ->> 'state' from public.settings where id = 1) = 'setup', 'reset puts the game back to not started'; end $$;
-do $$ begin assert (select count(*) from public.teams) > 0 and (select count(*) from public.secret) = 1, 'reset keeps teams and the secret'; end $$;
-
 -- ---------- visitor (not signed in) ----------
 select pg_temp.as_admin_db();
 set local role anon;
@@ -290,5 +283,13 @@ do $$ begin
 end $$;
 
 reset role;
-select 'ALL ACCESS TESTS PASSED' as result;
+-- ---------- organiser resets the game ----------
+select pg_temp.act_as('00000000-0000-0000-0000-0000000000a1');
+select public.reset_game();
+do $$ begin assert (select count(*) from public.visits) = 0 and (select count(*) from public.submissions) = 0
+             and (select count(*) from public.unlocked) = 0 and (select count(*) from public.team_members) = 0, 'reset clears play data and teams'; end $$;
+do $$ begin assert (select data ->> 'state' from public.settings where id = 1) = 'setup', 'reset puts the game back to not started'; end $$;
+do $$ begin assert (select count(*) from public.teams) > 0 and (select count(*) from public.secret) = 1, 'reset keeps teams and the secret'; end $$;
+select pg_temp.as_admin_db();
 rollback;
+select 'ALL ACCESS TESTS PASSED' as result;   -- only reached if every check above passed

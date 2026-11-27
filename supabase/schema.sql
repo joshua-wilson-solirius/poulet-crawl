@@ -400,7 +400,8 @@ create policy secret_admin     on public.secret       for all    to authenticate
 create policy admins_admin     on public.admins       for all    to authenticated using (public.is_admin()) with check (public.is_admin());
 
 -- own team only
-create policy rosters_read   on public.team_rosters for select to authenticated using (team_id = public.my_team() or public.is_admin());
+create policy rosters_read   on public.team_rosters for select to anon, authenticated
+  using (team_id = public.my_team() or public.is_admin() or team_id in (select id from public.teams where is_chicken));   -- the chicken's names are public
 create policy rosters_admin  on public.team_rosters for all    to authenticated using (public.is_admin()) with check (public.is_admin());
 create policy members_read   on public.team_members for select to authenticated using (user_id = auth.uid() or team_id = public.my_team() or public.is_admin());
 create policy members_admin  on public.team_members for all    to authenticated using (public.is_admin()) with check (public.is_admin());
@@ -438,7 +439,7 @@ create policy found_admin    on public.found for all to authenticated using (pub
 
 -- table privileges (row-level security above decides which rows)
 grant usage on schema public to anon, authenticated;
-grant select on public.settings, public.teams, public.pub_info, public.spends to anon;
+grant select on public.settings, public.teams, public.pub_info, public.spends, public.team_rosters to anon;
 grant select, insert, update, delete on all tables in schema public to authenticated;
 revoke insert on public.team_members from authenticated;   -- joining only through join_team()
 grant execute on function public.is_admin(), public.my_team(), public.setting(text), public.can_see_selfies(text), public.join_team(int, text),
