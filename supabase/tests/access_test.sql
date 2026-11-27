@@ -6,6 +6,7 @@ begin;
 
 -- fake people
 insert into auth.users (id, email, email_confirmed_at, is_anonymous, aud, role) values
+  ('00000000-0000-0000-0000-0000000000e1', null, null, true, 'authenticated', 'authenticated'),   -- organiser phone using the code
   ('00000000-0000-0000-0000-0000000000a1', 'test-organiser@poulet.test', now(), false, 'authenticated', 'authenticated'),
   ('00000000-0000-0000-0000-0000000000b1', null, null, true, 'authenticated', 'authenticated'),   -- player on team 1
   ('00000000-0000-0000-0000-0000000000b2', null, null, true, 'authenticated', 'authenticated'),   -- player on team 2
@@ -225,6 +226,28 @@ do $$ begin assert (select count(*) from public.selfies) = 1, 'undoing a check-i
 select pg_temp.as_admin_db();
 select pg_temp.act_as('00000000-0000-0000-0000-0000000000c1');
 do $$ begin assert (select count(*) from public.selfies) = 0, 'account with no team sees no selfies'; end $$;
+
+-- ---------- organiser code ----------
+select pg_temp.as_admin_db();
+select public.set_admin_code('test-code-123');
+select pg_temp.act_as('00000000-0000-0000-0000-0000000000e1');
+do $$ begin
+  begin perform public.set_admin_code('hijack'); raise exception 'FAIL: player could change the organiser code';
+  exception when insufficient_privilege then null; end;
+end $$;
+do $$ begin assert (select count(*) from public.admin_code) = 0, 'players cannot read the code hash'; end $$;
+do $$ begin assert not public.claim_admin('wrong'), 'wrong code is refused'; end $$;
+do $$ begin assert not public.is_admin(), 'wrong code does not make an organiser'; end $$;
+do $$ begin assert public.claim_admin('  TEST-code-123 '), 'right code (any case, spaces trimmed) is accepted'; end $$;
+do $$ begin assert public.is_admin(), 'code phone is an organiser'; end $$;
+do $$ begin assert (select count(*) from public.secret) = 1, 'code organiser reads the secret'; end $$;
+select public.release_admin();
+do $$ begin assert not public.is_admin(), 'locking HQ removes organiser access'; end $$;
+do $$ begin perform public.claim_admin('x'); perform public.claim_admin('x'); perform public.claim_admin('x'); perform public.claim_admin('x'); perform public.claim_admin('x'); end $$;
+do $$ begin
+  begin perform public.claim_admin('test-code-123'); raise exception 'FAIL: no lockout after 5 wrong tries';
+  exception when others then if sqlerrm like 'FAIL%' then raise; end if; end;
+end $$;
 
 -- ---------- visitor (not signed in) ----------
 select pg_temp.as_admin_db();
