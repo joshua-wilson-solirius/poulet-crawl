@@ -121,6 +121,8 @@ do $$ begin assert (select count(*) from public.visits) = 0, 'other team visits 
 do $$ begin assert (select count(*) from public.submissions) = 0, 'other team evidence hidden'; end $$;
 do $$ begin assert (select count(*) from public.team_rosters) = 1, 'only own roster visible'; end $$;
 do $$ begin assert (select count(*) from public.team_members) = 1, 'only own team members visible'; end $$;
+do $$ begin assert (select count(*) from public.roster()) >= 2, 'everyone sees team rosters (names only)'; end $$;
+do $$ begin assert exists (select 1 from public.roster() where name = 'Pat'), 'a joined player''s name appears in the roster'; end $$;
 do $$ begin assert (select count(*) from public.team_positions()) = 0, 'other team positions hidden while showOthers is off'; end $$;
 do $$ begin assert (select count(*) from public.leaderboard()) = 1, 'leaderboard shows own team only while hidden'; end $$;
 do $$ begin assert public.get_challenge('p2') is null, 'cannot read another team''s challenge pub'; end $$;
