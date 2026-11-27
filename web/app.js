@@ -17,6 +17,13 @@ const DEFAULT_TEAMS = [
   {id:"hens",    num:4,    name:"Hen Party",    color:"#8E4EC6", members:["Rosie","Kwame","Lily"]},
 ];
 const DEFAULT_SETTINGS = {interval:2, maxChallenges:3, state:"setup", showBoard:false, buyIn:"£15", start:"", budget:0};
+/* built-in challenges, used until an organiser saves their own in Chicken HQ → Content */
+const DEFAULT_CHALLENGES = {
+  c1:{title:"Poultry impersonation", text:"One of you orders a drink, clucking between every word. Send it as a video."},
+  c2:{title:"Bald encounters", text:"Everyone on your team gets a photo with a bald person. Send all the photos to the chickens."},
+  c3:{title:"Cannibal course", text:"Eat something made of chicken and send proof: a photo or video of one of you eating it."},
+};
+const okCh=c=>c&&(c.title||c.text);
 const PALETTE = ["#E5484D","#3E63DD","#12A594","#8E4EC6","#F76B15","#D6409F","#0090FF","#46A758","#E0A100","#6E56CF"];
 function defaultRules(){
   const ch=chicken();
@@ -169,8 +176,8 @@ const isStop=i=>(i+1)%D.interval===0&&(!D.maxCh||chNum(i)<=D.maxCh);
 const challengeStops=()=>D.maxCh?Array.from({length:D.maxCh},(_,j)=>(j+1)*D.interval):null;
 const ordinalWord=n=>(["","1st","2nd","3rd"][n]||n+"th");
 /* challenge text: numbered challenge first, then a pub's own, then the default */
-const adminChallengeFor=(pubId,num)=>{const ok=c=>c&&(c.title||c.text); const n=num&&D.challenges["c"+num];
-  return ok(n)?n:ok(D.challenges[pubId])?D.challenges[pubId]:(ok(D.challenges._all)?D.challenges._all:null);};
+const adminChallengeFor=(pubId,num)=>{const n=num&&(okCh(D.challenges["c"+num])?D.challenges["c"+num]:DEFAULT_CHALLENGES["c"+num]);
+  return okCh(n)?n:okCh(D.challenges[pubId])?D.challenges[pubId]:(okCh(D.challenges._all)?D.challenges._all:null);};
 const subFor=(t,pub)=>D.subs.find(s=>s.team===t&&s.pub===pub);
 const selfieFor=(t,pub)=>D.selfies[t+"|"+pub]||null;
 const finished=()=>D.settings.state==="finished";
@@ -252,7 +259,8 @@ function SupabaseBackend(client){
     },
     checkIn:(team,pub)=>q(client.from("visits").insert({team_id:team,pub_id:pub})),
     undoVisit:(team,pub)=>q(client.from("visits").delete().eq("team_id",team).eq("pub_id",pub)),
-    getChallenge:async pub=>{const d=await q(client.rpc("get_challenge",{p_pub:pub})); return d?{title:d.title||"",text:d.body||""}:null;},
+    getChallenge:async pub=>{const d=await q(client.rpc("get_challenge",{p_pub:pub})); if(!d) return null;
+      const c={title:d.title||"",text:d.body||""}; return okCh(c)?c:(DEFAULT_CHALLENGES["c"+d.num]||c);},
     async upload(team,pub,blob,type){
       const ext=(type.split("/")[1]||"bin").replace("jpeg","jpg").replace("quicktime","mov").split(";")[0];
       const path=`${team}/${pub}/${Date.now()}-${uid()}.${ext}`;
@@ -325,8 +333,8 @@ function LocalBackend(){
     async undoVisit(team,pub){ const f=x=>!(x.team_id===team&&x.pub_id===pub); db.visits=db.visits.filter(f); db.selfies=db.selfies.filter(f); save(); },
     async getChallenge(pub){ const t=myTeamId(), v=db.visits.filter(x=>x.team_id===t).sort((a,b)=>ms(a.at)-ms(b.at)||(a.pub_id<b.pub_id?-1:1));
       const i=v.findIndex(x=>x.pub_id===pub); if(i<0||!isStop(i)) return null;
-      const ok=c=>c&&(c.title||c.text), n=db.challenges["c"+chNum(i)];
-      return ok(n)?n:ok(db.challenges[pub])?db.challenges[pub]:(db.challenges._all||{title:"",text:""}); },
+      const n=okCh(db.challenges["c"+chNum(i)])?db.challenges["c"+chNum(i)]:DEFAULT_CHALLENGES["c"+chNum(i)];
+      return okCh(n)?n:okCh(db.challenges[pub])?db.challenges[pub]:(db.challenges._all||{title:"",text:""}); },
     async upload(team,pub,blob,type){ return {path:"demo/"+uid(),type,demo:true}; },
     async submit(team,pub,stop,media,note){ db.subs.push({id:uid(),team_id:team,pub_id:pub,stop,media,note,at:now(),status:"pending"}); save(); },
     async signUrls(){ return {}; },
@@ -878,8 +886,8 @@ function adminChallenges(){
   const q=(S.cq||"").toLowerCase(), list=PUBS.filter(p=>!q||p.name.toLowerCase().includes(q));
   const count=D.maxCh||3, stops=Array.from({length:count},(_,j)=>(j+1)*D.interval);
   return `<div class="card"><h2>Challenges</h2><p class="sm muted">Teams get challenge 1 at the ${ordinalWord(stops[0])} pub they check into${count>1?`, challenge 2 at the ${ordinalWord(stops[1])}`:""}${count>2?", and so on":""}. They only see each one when they get there. Change how many in Setup.</p>
-      ${stops.map((st,j)=>{const id="c"+(j+1), c=D.challenges[id]||{};
-        return `<div class="chalrow"><div class="row"><span class="pill yolk">Challenge ${j+1}</span><span class="sm muted">${ordinalWord(st)} pub</span><span class="spacer"></span>${c.title||c.text?'<span class="pill good">Set</span>':""}</div>
+      ${stops.map((st,j)=>{const id="c"+(j+1), own=okCh(D.challenges[id]), c=own?D.challenges[id]:(DEFAULT_CHALLENGES[id]||{});
+        return `<div class="chalrow"><div class="row"><span class="pill yolk">Challenge ${j+1}</span><span class="sm muted">${ordinalWord(st)} pub</span><span class="spacer"></span>${own?'<span class="pill good">Saved</span>':okCh(c)?'<span class="pill">Built-in</span>':""}</div>
           <input type="text" id="ch-${id}-t" value="${esc(c.title||"")}" placeholder="Title" aria-label="Challenge ${j+1} title">
           <textarea id="ch-${id}-x" placeholder="What they have to do and send" aria-label="Challenge ${j+1} details">${esc(c.text||"")}</textarea>
           <div><button class="btn sm primary" data-action="savechal" data-pub="${id}">Save challenge ${j+1}</button></div></div>`;}).join("")}</div>
