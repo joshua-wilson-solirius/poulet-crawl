@@ -4,6 +4,12 @@
 
 begin;
 
+-- Start from an empty game so real players don't affect the counts below. All of this is rolled back at the end,
+-- so the real game is untouched.
+delete from public.unlocked where true; delete from public.submissions where true; delete from public.selfies where true;
+delete from public.visits where true; delete from public.found where true; delete from public.spends where true;
+delete from public.team_members where true; delete from public.admin_attempts where true; delete from public.admin_devices where true;
+
 -- fake people
 insert into auth.users (id, email, email_confirmed_at, is_anonymous, aud, role) values
   ('00000000-0000-0000-0000-0000000000e1', null, null, true, 'authenticated', 'authenticated'),   -- organiser phone using the code
