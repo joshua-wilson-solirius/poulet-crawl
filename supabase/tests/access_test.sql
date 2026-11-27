@@ -291,5 +291,5 @@ do $$ begin assert (select count(*) from public.visits) = 0 and (select count(*)
 do $$ begin assert (select data ->> 'state' from public.settings where id = 1) = 'setup', 'reset puts the game back to not started'; end $$;
 do $$ begin assert (select count(*) from public.teams) > 0 and (select count(*) from public.secret) = 1, 'reset keeps teams and the secret'; end $$;
 select pg_temp.as_admin_db();
-select 'ALL ACCESS TESTS PASSED' as result;
 rollback;
+select 'ALL ACCESS TESTS PASSED' as result;   -- only reached if every check above passed
