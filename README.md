@@ -14,7 +14,8 @@ a challenge every 2nd pub, photo/video evidence, and clues the organisers unlock
 3. **Database**: in **SQL Editor**, paste `supabase/schema.sql` and run it. Then run `supabase/tests/access_test.sql`. It should end with `ALL ACCESS TESTS PASSED`, and it leaves no data behind.
 4. **Organiser code**: in the SQL Editor, run `select public.set_admin_code('<your code>');`. Never commit the code.
    Organisers tap the account button in the app, choose **Organiser code** and type it, and that phone gets Chicken HQ. Five wrong tries locks a phone out for 10 minutes.
-   Running `set_admin_code` again changes the code and locks every organiser phone.
+   Running `set_admin_code` again changes the code and locks every organiser phone. Organiser phones aren't on a team.
+   **HQ → Setup → Reset the game** wipes all play data and team memberships before the real night.
 5. **Connect the app**: copy the Project URL and the anon/publishable key into `web/config.js`.
    That key is public by design, because the database rules decide who can see and change what.
 6. **Deploy**: merge to `main`. GitHub Actions publishes `web/` to GitHub Pages.
