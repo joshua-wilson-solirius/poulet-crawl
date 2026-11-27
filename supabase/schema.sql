@@ -131,14 +131,9 @@ select * from (values
   ('rangers', 3,         'Free Rangers', '#12A594', false, 3),
   ('hens',    4,         'Hen Party',    '#8E4EC6', false, 4)
 ) v where not exists (select 1 from public.teams);
+-- Hunting teams start empty: their members are the players who join (see roster()). Only the chicken has a fixed roster.
 insert into public.team_rosters (team_id, names)
-select * from (values
-  ('poulet',  array['Dom','Josh']),
-  ('coqs',    array['Sam','Jordan','Chloe']),
-  ('nuggets', array['Marcus','Ellie','Tom']),
-  ('rangers', array['Hana','Ben','Zara']),
-  ('hens',    array['Rosie','Kwame','Lily'])
-) v(team_id, names) where not exists (select 1 from public.team_rosters);
+select 'poulet', array['Dom','Josh'] where not exists (select 1 from public.team_rosters);
 
 -- ---------------------------------------------------------------
 -- Helper functions
@@ -196,6 +191,14 @@ begin
   insert into public.admin_attempts (user_id) values (auth.uid());
   return false;
 end $$;
+
+-- Who is on each team: the names players typed when they joined (approved members only). Names only, no ids.
+create or replace function public.roster() returns table (team_id text, name text, joined_at timestamptz)
+language sql stable security definer set search_path = public as $$
+  select m.team_id, coalesce(nullif(trim(m.display_name), ''), 'Player'), m.joined_at
+  from public.team_members m where m.approved order by m.joined_at;
+$$;
+grant execute on function public.roster() to anon, authenticated;
 
 create or replace function public.release_admin() returns void
 language sql security definer set search_path = public as $$
